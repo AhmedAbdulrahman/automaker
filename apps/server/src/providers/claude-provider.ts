@@ -6,10 +6,9 @@
  */
 
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { classifyError, createLogger, getUserFriendlyErrorMessage } from '@automaker/utils';
 import { BaseProvider } from './base-provider.js';
-import { classifyError, getUserFriendlyErrorMessage, createLogger } from '@automaker/utils';
 
-const logger = createLogger('ClaudeProvider');
 import {
   getThinkingTokenBudget,
   validateBareModelId,
@@ -25,12 +24,32 @@ import {
  * Both share the same connection settings structure.
  */
 type ProviderConfig = ClaudeApiProfile | ClaudeCompatibleProvider;
+
 import type {
   ExecuteOptions,
-  ProviderMessage,
   InstallationStatus,
   ModelDefinition,
+  ProviderMessage,
 } from './types.js';
+
+const logger = createLogger('ClaudeProvider');
+
+/**
+ * Check if the process is running as root/sudo.
+ * Claude Code refuses to use --dangerously-skip-permissions with root privileges,
+ * so we need to detect this and use a different permission mode.
+ */
+function isRunningAsRoot(): boolean {
+  // Check Unix-style UID (0 = root)
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    return true;
+  }
+  // Check common environment indicators for Docker/container environments
+  if (process.env.USER === 'root' || process.env.EUID === '0') {
+    return true;
+  }
+  return false;
+}
 
 // Explicit allowlist of environment variables to pass to the SDK.
 // Only these vars are passed - nothing else from process.env leaks through.
@@ -222,6 +241,13 @@ export class ClaudeProvider extends BaseProvider {
     // Convert thinking level to token budget
     const maxThinkingTokens = getThinkingTokenBudget(thinkingLevel);
 
+    // Detect if running as root (e.g., in Docker containers)
+    // Claude Code refuses --dangerously-skip-permissions with root privileges
+    const runningAsRoot = isRunningAsRoot();
+    if (runningAsRoot) {
+      logger.info('Detected root/sudo environment - using default permission mode');
+    }
+
     // Build Claude SDK options
     const sdkOptions: Options = {
       model,
@@ -234,9 +260,11 @@ export class ClaudeProvider extends BaseProvider {
       env: buildEnv(providerConfig, credentials),
       // Pass through allowedTools if provided by caller (decided by sdk-options.ts)
       ...(allowedTools && { allowedTools }),
-      // AUTONOMOUS MODE: Always bypass permissions for fully autonomous operation
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      // AUTONOMOUS MODE: Bypass permissions for fully autonomous operation
+      // BUT: If running as root (Docker), use 'default' mode since Claude Code
+      // refuses --dangerously-skip-permissions with root privileges
+      permissionMode: runningAsRoot ? 'default' : 'bypassPermissions',
+      allowDangerouslySkipPermissions: !runningAsRoot,
       abortController,
       // Resume existing SDK session if we have a session ID
       ...(sdkSessionId && conversationHistory && conversationHistory.length > 0
