@@ -284,9 +284,16 @@ check_docker() {
             fi
         fi
     else
-        # Docker works out of the box
+        # Docker works out of the box - detect runtime type
         if [ -n "$DOCKER_HOST" ] && [[ "$DOCKER_HOST" == *"colima"* ]]; then
             DOCKER_RUNTIME="colima"
+            echo "${C_GREEN}✓${RESET} Using Colima Docker socket: $DOCKER_HOST"
+        elif docker context ls 2>/dev/null | grep -q "colima.*\*"; then
+            # Docker context is set to colima
+            DOCKER_RUNTIME="colima"
+            local colima_endpoint
+            colima_endpoint=$(docker context ls 2>/dev/null | grep "colima.*\*" | awk '{print $3}')
+            echo "${C_GREEN}✓${RESET} Using Colima Docker context: $colima_endpoint"
         else
             DOCKER_RUNTIME="docker"
         fi
