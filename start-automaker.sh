@@ -145,6 +145,10 @@ HISTORY:
 PLATFORMS:
   Linux, macOS, Windows (Git Bash, WSL, MSYS2, Cygwin)
 
+DOCKER RUNTIMES:
+  Supports Docker Desktop and Colima (auto-detected)
+  For Colima users: ensure 'colima start' has been run
+
 EOF
 }
 
@@ -233,6 +237,26 @@ check_required_commands() {
 }
 
 DOCKER_CMD="docker"
+DOCKER_RUNTIME=""
+COMPOSE_CMD=""
+
+# Detect which docker compose command is available
+detect_compose_cmd() {
+    # Try docker compose (plugin) first
+    if docker compose version &> /dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+        return 0
+    fi
+
+    # Fall back to docker-compose (standalone)
+    if command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD="docker-compose"
+        return 0
+    fi
+
+    # No compose available
+    return 1
+}
 
 check_docker() {
     if ! command -v docker &> /dev/null; then
@@ -241,22 +265,80 @@ check_docker() {
         return 1
     fi
 
+    # Check if Docker is accessible
     if ! docker info &> /dev/null 2>&1; then
-        if sg docker -c "docker info" &> /dev/null 2>&1; then
-            DOCKER_CMD="sg docker -c"
+        # Try Colima socket locations (macOS)
+        local colima_sockets=(
+            "$HOME/.config/colima/default/docker.sock"
+            "$HOME/.colima/default/docker.sock"
+            "$HOME/.colima/docker.sock"
+        )
+
+        local socket_found=false
+        for sock in "${colima_sockets[@]}"; do
+            if [ -S "$sock" ]; then
+                export DOCKER_HOST="unix://$sock"
+                if docker info &> /dev/null 2>&1; then
+                    DOCKER_RUNTIME="colima"
+                    socket_found=true
+                    echo "${C_GREEN}✓${RESET} Using Colima Docker socket: $sock"
+                    break
+                fi
+            fi
+        done
+
+        # If Colima didn't work, try Linux docker group workaround
+        if [ "$socket_found" = false ]; then
+            if sg docker -c "docker info" &> /dev/null 2>&1; then
+                DOCKER_CMD="sg docker -c"
+                DOCKER_RUNTIME="docker-group"
+            else
+                echo "${C_RED}Error:${RESET} Docker daemon is not running or not accessible"
+                echo ""
+                if [ "$IS_MACOS" = true ]; then
+                    echo "If using Colima, start it with:"
+                    echo "  colima start"
+                    echo ""
+                    echo "If using Docker Desktop, make sure it's running."
+                else
+                    echo "To fix, run:"
+                    echo "  sudo usermod -aG docker \$USER"
+                    echo ""
+                    echo "Then either log out and back in, or run:"
+                    echo "  newgrp docker"
+                fi
+                return 1
+            fi
+        fi
+    else
+        # Docker works out of the box
+        if [ -n "$DOCKER_HOST" ] && [[ "$DOCKER_HOST" == *"colima"* ]]; then
+            DOCKER_RUNTIME="colima"
         else
-            echo "${C_RED}Error:${RESET} Docker daemon is not running or not accessible"
-            echo ""
-            echo "To fix, run:"
-            echo "  sudo usermod -aG docker \$USER"
-            echo ""
-            echo "Then either log out and back in, or run:"
-            echo "  newgrp docker"
-            return 1
+            DOCKER_RUNTIME="docker"
         fi
     fi
 
     export DOCKER_CMD
+    export DOCKER_HOST
+    export DOCKER_RUNTIME
+
+    # Detect and set up compose command
+    if ! detect_compose_cmd; then
+        echo "${C_RED}Error:${RESET} Docker Compose is not installed"
+        echo ""
+        echo "Install Docker Compose:"
+        if [ "$IS_MACOS" = true ]; then
+            echo "  brew install docker-compose"
+        else
+            echo "  sudo apt-get install docker-compose  # Debian/Ubuntu"
+            echo "  # or visit: https://docs.docker.com/compose/install/"
+        fi
+        return 1
+    fi
+    echo "${C_GREEN}✓${RESET} Using compose command: $COMPOSE_CMD"
+    export COMPOSE_CMD
+
     return 0
 }
 
@@ -368,10 +450,10 @@ check_running_containers() {
                     echo ""
                     center_print "Stopping existing containers..." "$C_YELLOW"
                     if [ "$DOCKER_CMD" = "sg docker -c" ]; then
-                        sg docker -c "docker compose -f '$compose_file' down" 2>/dev/null || true
+                        sg docker -c "$COMPOSE_CMD -f '$compose_file' down" 2>/dev/null || true
                         sg docker -c "docker ps --filter 'name=automaker-dev' -q" 2>/dev/null | xargs -r sg docker -c "docker stop" 2>/dev/null || true
                     else
-                        $DOCKER_CMD compose -f "$compose_file" down 2>/dev/null || true
+                        $COMPOSE_CMD -f "$compose_file" down 2>/dev/null || true
                         $DOCKER_CMD ps --filter "name=automaker-dev" -q 2>/dev/null | xargs -r $DOCKER_CMD stop 2>/dev/null || true
                     fi
                     center_print "✓ Containers stopped" "$C_GREEN"
@@ -382,9 +464,9 @@ check_running_containers() {
                     echo ""
                     center_print "Stopping and rebuilding containers..." "$C_YELLOW"
                     if [ "$DOCKER_CMD" = "sg docker -c" ]; then
-                        sg docker -c "docker compose -f '$compose_file' down" 2>/dev/null || true
+                        sg docker -c "$COMPOSE_CMD -f '$compose_file' down" 2>/dev/null || true
                     else
-                        $DOCKER_CMD compose -f "$compose_file" down 2>/dev/null || true
+                        $COMPOSE_CMD -f "$compose_file" down 2>/dev/null || true
                     fi
                     center_print "✓ Ready to rebuild" "$C_GREEN"
                     echo ""
@@ -1285,21 +1367,25 @@ case $MODE in
             echo ""
             if [ "$DOCKER_CMD" = "sg docker -c" ]; then
                 if [ -f "docker-compose.override.yml" ]; then
-                    sg docker -c "docker compose -f 'docker-compose.dev.yml' -f 'docker-compose.override.yml' logs -f"
+                    sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev.yml' -f 'docker-compose.override.yml' logs -f"
                 else
-                    sg docker -c "docker compose -f 'docker-compose.dev.yml' logs -f"
+                    sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev.yml' logs -f"
                 fi
             else
                 if [ -f "docker-compose.override.yml" ]; then
-                    $DOCKER_CMD compose -f docker-compose.dev.yml -f docker-compose.override.yml logs -f
+                    $COMPOSE_CMD -f docker-compose.dev.yml -f docker-compose.override.yml logs -f
                 else
-                    $DOCKER_CMD compose -f docker-compose.dev.yml logs -f
+                    $COMPOSE_CMD -f docker-compose.dev.yml logs -f
                 fi
             fi
         else
             echo ""
             center_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "$C_GRAY"
-            center_print "Docker Development Mode" "$C_PRI"
+            if [ "$DOCKER_RUNTIME" = "colima" ]; then
+                center_print "Docker Development Mode (Colima)" "$C_PRI"
+            else
+                center_print "Docker Development Mode" "$C_PRI"
+            fi
             center_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "$C_GRAY"
             echo ""
             center_print "Starting UI + Server containers..." "$C_MUTE"
@@ -1315,15 +1401,15 @@ case $MODE in
             echo ""
             if [ "$DOCKER_CMD" = "sg docker -c" ]; then
                 if [ -f "docker-compose.override.yml" ]; then
-                    sg docker -c "docker compose -f 'docker-compose.dev.yml' -f 'docker-compose.override.yml' up --build"
+                    sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev.yml' -f 'docker-compose.override.yml' up --build"
                 else
-                    sg docker -c "docker compose -f 'docker-compose.dev.yml' up --build"
+                    sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev.yml' up --build"
                 fi
             else
                 if [ -f "docker-compose.override.yml" ]; then
-                    $DOCKER_CMD compose -f docker-compose.dev.yml -f docker-compose.override.yml up --build
+                    $COMPOSE_CMD -f docker-compose.dev.yml -f docker-compose.override.yml up --build
                 else
-                    $DOCKER_CMD compose -f docker-compose.dev.yml up --build
+                    $COMPOSE_CMD -f docker-compose.dev.yml up --build
                 fi
             fi
         fi
@@ -1338,7 +1424,11 @@ case $MODE in
 
         echo ""
         center_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "$C_GRAY"
-        center_print "Electron + Docker API Mode" "$C_PRI"
+        if [ "$DOCKER_RUNTIME" = "colima" ]; then
+            center_print "Electron + Docker API Mode (Colima)" "$C_PRI"
+        else
+            center_print "Electron + Docker API Mode" "$C_PRI"
+        fi
         center_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "$C_GRAY"
         echo ""
         center_print "Server runs in Docker container" "$C_MUTE"
@@ -1366,15 +1456,15 @@ case $MODE in
             echo ""
             if [ "$DOCKER_CMD" = "sg docker -c" ]; then
                 if [ -f "docker-compose.override.yml" ]; then
-                    sg docker -c "docker compose -f 'docker-compose.dev-server.yml' -f 'docker-compose.override.yml' up --build" &
+                    sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev-server.yml' -f 'docker-compose.override.yml' up --build" &
                 else
-                    sg docker -c "docker compose -f 'docker-compose.dev-server.yml' up --build" &
+                    sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev-server.yml' up --build" &
                 fi
             else
                 if [ -f "docker-compose.override.yml" ]; then
-                    $DOCKER_CMD compose -f docker-compose.dev-server.yml -f docker-compose.override.yml up --build &
+                    $COMPOSE_CMD -f docker-compose.dev-server.yml -f docker-compose.override.yml up --build &
                 else
-                    $DOCKER_CMD compose -f docker-compose.dev-server.yml up --build &
+                    $COMPOSE_CMD -f docker-compose.dev-server.yml up --build &
                 fi
             fi
             DOCKER_PID=$!
@@ -1422,9 +1512,9 @@ case $MODE in
         center_print "Shutting down Docker container..." "$C_MUTE"
         [ -n "$DOCKER_PID" ] && kill $DOCKER_PID 2>/dev/null || true
         if [ "$DOCKER_CMD" = "sg docker -c" ]; then
-            sg docker -c "docker compose -f 'docker-compose.dev-server.yml' down" 2>/dev/null || true
+            sg docker -c "$COMPOSE_CMD -f 'docker-compose.dev-server.yml' down" 2>/dev/null || true
         else
-            $DOCKER_CMD compose -f docker-compose.dev-server.yml down 2>/dev/null || true
+            $COMPOSE_CMD -f docker-compose.dev-server.yml down 2>/dev/null || true
         fi
         center_print "Done!" "$C_GREEN"
         ;;
