@@ -118,13 +118,14 @@ export function useBoardActions({
       const workMode = featureData.workMode || 'current';
 
       // Determine final branch name based on work mode:
-      // - 'current': Use selected worktree branch if available, otherwise undefined (work on main)
+      // - 'current': Use current worktree's branch (or undefined if on main)
       // - 'auto': Auto-generate branch name based on current branch
       // - 'custom': Use the provided branch name
       let finalBranchName: string | undefined;
 
       if (workMode === 'current') {
-        // If a worktree is selected, use its branch; otherwise work on main (undefined = no branch assignment)
+        // Work directly on current branch - use the current worktree's branch if not on main
+        // This ensures features created on a non-main worktree are associated with that worktree
         finalBranchName = currentWorktreeBranch || undefined;
       } else if (workMode === 'auto') {
         // Auto-generate a branch name based on primary branch (main/master) and timestamp
@@ -284,7 +285,8 @@ export function useBoardActions({
       let finalBranchName: string | undefined;
 
       if (workMode === 'current') {
-        // If a worktree is selected, use its branch; otherwise work on main (undefined = no branch assignment)
+        // Work directly on current branch - use the current worktree's branch if not on main
+        // This ensures features updated on a non-main worktree are associated with that worktree
         finalBranchName = currentWorktreeBranch || undefined;
       } else if (workMode === 'auto') {
         // Auto-generate a branch name based on primary branch (main/master) and timestamp

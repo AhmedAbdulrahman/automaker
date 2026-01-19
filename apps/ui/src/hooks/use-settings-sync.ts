@@ -682,6 +682,8 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       worktreePanelCollapsed: serverSettings.worktreePanelCollapsed ?? false,
       lastProjectDir: serverSettings.lastProjectDir ?? '',
       recentFolders: serverSettings.recentFolders ?? [],
+      // Event hooks
+      eventHooks: serverSettings.eventHooks ?? [],
       // Terminal settings (nested in terminalState)
       ...((serverSettings.terminalFontFamily || serverSettings.openTerminalMode) && {
         terminalState: {
