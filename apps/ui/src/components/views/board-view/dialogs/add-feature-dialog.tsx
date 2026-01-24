@@ -267,6 +267,13 @@ export function AddFeatureDialog({
     allFeatures,
   ]);
 
+  // Clear requirePlanApproval when planning mode is skip or lite
+  useEffect(() => {
+    if (planningMode === 'skip' || planningMode === 'lite') {
+      setRequirePlanApproval(false);
+    }
+  }, [planningMode]);
+
   const handleModelChange = (entry: PhaseModelEntry) => {
     setModelEntry(entry);
   };

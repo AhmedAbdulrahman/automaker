@@ -4126,7 +4126,7 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
         // Execute task with dedicated agent
         const taskStream = provider.executeQuery({
           prompt: taskPrompt,
-          model: bareModel,
+          model: effectiveBareModel,
           maxTurns: Math.min(maxTurns || 100, 50),
           cwd: workDir,
           allowedTools: allowedTools,
@@ -4210,14 +4210,10 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
       logger.info(`Recovery: All tasks completed for feature ${featureId}`);
 
       // Extract and save final summary
+      // Note: saveFeatureSummary already emits auto_mode_summary event
       const summary = extractSummary(responseText);
       if (summary) {
         await this.saveFeatureSummary(projectPath, featureId, summary);
-        this.emitAutoModeEvent('auto_mode_summary', {
-          featureId,
-          projectPath,
-          summary,
-        });
       }
 
       // Final write and cleanup
@@ -4455,7 +4451,7 @@ After generating the revised spec, output:
                         // Make revision call
                         const revisionStream = provider.executeQuery({
                           prompt: revisionPrompt,
-                          model: bareModel,
+                          model: effectiveBareModel,
                           maxTurns: maxTurns || 100,
                           cwd: workDir,
                           allowedTools: allowedTools,
@@ -4613,7 +4609,7 @@ After generating the revised spec, output:
                     // Execute task with dedicated agent
                     const taskStream = provider.executeQuery({
                       prompt: taskPrompt,
-                      model: bareModel,
+                      model: effectiveBareModel,
                       maxTurns: Math.min(maxTurns || 100, 50), // Limit turns per task
                       cwd: workDir,
                       allowedTools: allowedTools,
@@ -4654,11 +4650,12 @@ After generating the revised spec, output:
                                   startTaskId,
                                   'in_progress'
                                 );
-                                this.emitAutoModeEvent('auto_mode_task_start', {
+                                this.emitAutoModeEvent('auto_mode_task_started', {
                                   featureId,
                                   projectPath,
                                   branchName,
                                   taskId: startTaskId,
+                                  taskDescription: task.description,
                                   taskIndex,
                                   tasksTotal: parsedTasks.length,
                                 });
@@ -4774,7 +4771,7 @@ After generating the revised spec, output:
 
                   const continuationStream = provider.executeQuery({
                     prompt: continuationPrompt,
-                    model: bareModel,
+                    model: effectiveBareModel,
                     maxTurns: maxTurns,
                     cwd: workDir,
                     allowedTools: allowedTools,
@@ -5245,6 +5242,13 @@ After generating the revised spec, output:
       // Resume each interrupted feature
       for (const feature of interruptedFeatures) {
         try {
+          // Skip if feature is already running (prevents "already running" error)
+          if (this.runningFeatures.has(feature.id)) {
+            logger.info(
+              `Feature ${feature.id} (${feature.title}) is already running, skipping resume`
+            );
+            continue;
+          }
           logger.info(`Resuming feature: ${feature.id} (${feature.title})`);
           // Use resumeFeature which will detect the existing context and continue
           await this.resumeFeature(projectPath, feature.id, true);

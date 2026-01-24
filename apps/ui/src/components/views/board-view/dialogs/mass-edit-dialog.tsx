@@ -198,6 +198,13 @@ export function MassEditDialog({
     }
   }, [open, selectedFeatures]);
 
+  // Clear requirePlanApproval when planning mode is skip or lite
+  useEffect(() => {
+    if (planningMode === 'skip' || planningMode === 'lite') {
+      setRequirePlanApproval(false);
+    }
+  }, [planningMode]);
+
   const handleApply = async () => {
     const updates: Partial<Feature> = {};
 
