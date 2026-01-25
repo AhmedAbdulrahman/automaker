@@ -161,7 +161,7 @@ const getServerUrl = (): string => {
 
     // In web mode (not Electron), use relative URL to leverage Vite proxy
     // This avoids CORS issues since requests appear same-origin
-    if (!window.Electron) {
+    if (!window.isElectron) {
       return '';
     }
   }

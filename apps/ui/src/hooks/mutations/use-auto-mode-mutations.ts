@@ -348,7 +348,7 @@ export function useStartAutoMode(projectPath: string) {
     mutationFn: async (maxConcurrency?: number) => {
       const api = getElectronAPI();
       if (!api.autoMode) throw new Error('AutoMode API not available');
-      const result = await api.autoMode.start(projectPath, String(maxConcurrency ?? ''));
+      const result = await api.autoMode.start(projectPath, undefined, maxConcurrency);
       if (!result.success) {
         throw new Error(result.error || 'Failed to start auto mode');
       }

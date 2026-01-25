@@ -89,13 +89,17 @@ export function ClaudeCliStatus({ status, authStatus, isChecking, onRefresh }: C
     setIsAuthenticating(true);
     try {
       const api = getElectronAPI();
-      if (!api.setup) {
+      // Check if authClaude method exists on the API
+      const authClaude = (api.setup as Record<string, unknown> | undefined)?.authClaude as
+        | (() => Promise<{ success: boolean; error?: string }>)
+        | undefined;
+      if (!authClaude) {
         toast.error('Authentication Failed', {
-          description: 'Setup API is not available',
+          description: 'Claude authentication is not available',
         });
         return;
       }
-      const result = await api.setup.authClaude();
+      const result = await authClaude();
 
       if (result.success) {
         toast.success('Signed In', {

@@ -210,7 +210,7 @@ export function CursorCliStatus({ status, isChecking, onRefresh }: CursorCliStat
     try {
       const api = getElectronAPI();
       // Check if authCursor method exists on the API
-      const authCursor = (api.setup as Record<string, unknown> | undefined)?.authCursor as
+      const authCursor = (api?.setup as Record<string, unknown> | undefined)?.authCursor as
         | (() => Promise<{ success: boolean; error?: string }>)
         | undefined;
       if (!authCursor) {
@@ -245,7 +245,7 @@ export function CursorCliStatus({ status, isChecking, onRefresh }: CursorCliStat
     try {
       const api = getElectronAPI();
       // Check if deauthCursor method exists on the API
-      const deauthCursor = (api.setup as Record<string, unknown> | undefined)?.deauthCursor as
+      const deauthCursor = (api?.setup as Record<string, unknown> | undefined)?.deauthCursor as
         | (() => Promise<{ success: boolean; error?: string }>)
         | undefined;
       if (!deauthCursor) {

@@ -69,6 +69,9 @@ export function useApiKeysStatus() {
         throw new Error('Setup API not available');
       }
       const result = await api.setup.getApiKeys();
+      if (!result.success) {
+        throw new Error('Failed to fetch API keys');
+      }
       return result;
     },
     staleTime: STALE_TIMES.CLI_STATUS,
