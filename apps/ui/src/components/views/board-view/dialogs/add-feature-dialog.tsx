@@ -50,7 +50,7 @@ import {
 } from '../shared';
 import type { WorkMode } from '../shared';
 import { PhaseModelSelector } from '@/components/views/settings-view/model-defaults/phase-model-selector';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   getAncestors,
   formatAncestorContextForPrompt,
@@ -532,26 +532,24 @@ export function AddFeatureDialog({
                 <Cpu className="w-4 h-4 text-muted-foreground" />
                 <span>AI & Execution</span>
               </div>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenChange(false);
-                        navigate({ to: '/settings', search: { view: 'defaults' } });
-                      }}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <Settings2 className="w-3.5 h-3.5" />
-                      <span>Edit Defaults</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Change default model and planning settings for new features</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenChange(false);
+                      navigate({ to: '/settings', search: { view: 'defaults' } });
+                    }}
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    <span>Edit Defaults</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Change default model and planning settings for new features</p>
+                </TooltipContent>
+              </Tooltip>
             </div>
 
             <div className="space-y-1.5">
