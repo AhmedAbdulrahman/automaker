@@ -734,10 +734,11 @@ show_header() {
     local top_pad=$(( TERM_LINES / 6 ))
     for ((i=0; i<top_pad; i++)); do echo ""; done
 
-    # Automaker ASCII art logo
-    local l1="  █▀▀█ █  █ ▀▀█▀▀ █▀▀█ █▀▄▀█ █▀▀█ █ █ █▀▀ █▀▀█  "
-    local l2="  █▄▄█ █  █   █   █  █ █ ▀ █ █▄▄█ █▀▄ █▀▀ █▄▄▀  "
-    local l3="  ▀  ▀  ▀▀▀   ▀   ▀▀▀▀ ▀   ▀ ▀  ▀ ▀ ▀ ▀▀▀ ▀ ▀▀  "
+    # Instabuild ASCII art logo
+    local l1="▗▄▄▄▖▗▖  ▗▖ ▗▄▄▖▗▄▄▄▖▗▄▖ ▗▄▄▖ ▗▖ ▗▖▗▄▄▄▖▗▖   ▗▄▄▄   "
+    local l2="  █  ▐▛▚▖▐▌▐▌     █ ▐▌ ▐▌▐▌ ▐▌▐▌ ▐▌  █  ▐▌   ▐▌  █  "
+    local l3="  █  ▐▌ ▝▜▌ ▝▀▚▖  █ ▐▛▀▜▌▐▛▀▚▖▐▌ ▐▌  █  ▐▌   ▐▌  █  "
+    local l4=" ▄█▄▖▐▌  ▐▌▗▄▄▞▘  █ ▐▌ ▐▌▐▙▄▞▘▝▚▄▞▘▗▄█▄▖▐▙▄▄▖▐▙▄▄▀  "
 
     local pad_left=$(( (TERM_COLS - LOGO_WIDTH) / 2 ))
     local pad=$(printf "%${pad_left}s" "")
@@ -745,6 +746,7 @@ show_header() {
     echo -e "${pad}${C_PRI}${l1}${RESET}"
     echo -e "${pad}${C_SEC}${l2}${RESET}"
     echo -e "${pad}${C_ACC}${l3}${RESET}"
+    echo -e "${pad}${C_ACC}${l4}${RESET}"
 
     echo ""
     local mode_indicator=""
@@ -1243,7 +1245,7 @@ fi
 # Execute the appropriate command
 case $MODE in
     web)
-        export $(grep -v '^#' .env | xargs) 
+        export $(grep -v '^#' .env | xargs)
         export TEST_PORT="$WEB_PORT"
         export VITE_SERVER_URL="http://${APP_HOST}:$SERVER_PORT"
         export PORT="$SERVER_PORT"
