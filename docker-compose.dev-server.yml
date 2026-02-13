@@ -36,6 +36,10 @@ services:
       # Optional - Cursor CLI OAuth token
       - CURSOR_AUTH_TOKEN=${CURSOR_AUTH_TOKEN:-}
 
+      # Optional - GitHub CLI token (for PR operations)
+      # On macOS, gh auth tokens are in keychain, so use GH_TOKEN instead
+      - GH_TOKEN=${GH_TOKEN:-}
+
       # Optional - authentication
       - AUTOMAKER_API_KEY=${AUTOMAKER_API_KEY:-}
 

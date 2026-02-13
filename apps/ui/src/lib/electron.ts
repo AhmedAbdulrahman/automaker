@@ -1,68 +1,68 @@
 // Type definitions for Electron IPC API
-import type { SessionListItem, Message } from '@/types/electron';
 import type { ClaudeUsageResponse, CodexUsageResponse } from '@/store/app-store';
+import type { Message, SessionListItem } from '@/types/electron';
 import type {
-  IssueValidationVerdict,
-  IssueValidationConfidence,
-  IssueComplexity,
-  IssueValidationInput,
-  IssueValidationResult,
-  IssueValidationResponse,
-  IssueValidationEvent,
-  StoredValidation,
-  ModelId,
-  ThinkingLevel,
-  ReasoningEffort,
+  AnalysisSuggestion,
+  ConvertToFeatureOptions,
+  CreateIdeaInput,
+  Feature,
   GitHubComment,
-  IssueCommentsResult,
   Idea,
   IdeaCategory,
-  IdeationSession,
+  IdeationAnalysisEvent,
+  IdeationContextSources,
   IdeationMessage,
   IdeationPrompt,
-  PromptCategory,
-  ProjectAnalysisResult,
-  AnalysisSuggestion,
-  StartSessionOptions,
-  CreateIdeaInput,
-  UpdateIdeaInput,
-  ConvertToFeatureOptions,
-  IdeationContextSources,
-  Feature,
+  IdeationSession,
   IdeationStreamEvent,
-  IdeationAnalysisEvent,
+  IssueCommentsResult,
+  IssueComplexity,
+  IssueValidationConfidence,
+  IssueValidationEvent,
+  IssueValidationInput,
+  IssueValidationResponse,
+  IssueValidationResult,
+  IssueValidationVerdict,
+  ModelId,
+  ProjectAnalysisResult,
+  PromptCategory,
+  ReasoningEffort,
+  StartSessionOptions,
+  StoredValidation,
+  ThinkingLevel,
+  UpdateIdeaInput,
 } from '@automaker/types';
 import { DEFAULT_MAX_CONCURRENCY } from '@automaker/types';
-import { getJSON, setJSON, removeItem } from './storage';
+import { getJSON, removeItem, setJSON } from './storage';
 
 // Re-export issue validation types for use in components
 export type {
-  IssueValidationVerdict,
-  IssueValidationConfidence,
-  IssueComplexity,
-  IssueValidationInput,
-  IssueValidationResult,
-  IssueValidationResponse,
-  IssueValidationEvent,
-  StoredValidation,
   GitHubComment,
   IssueCommentsResult,
+  IssueComplexity,
+  IssueValidationConfidence,
+  IssueValidationEvent,
+  IssueValidationInput,
+  IssueValidationResponse,
+  IssueValidationResult,
+  IssueValidationVerdict,
+  StoredValidation,
 };
 
 // Re-export ideation types
 export type {
+  AnalysisSuggestion,
+  ConvertToFeatureOptions,
+  CreateIdeaInput,
   Idea,
   IdeaCategory,
-  IdeationSession,
   IdeationMessage,
   IdeationPrompt,
-  PromptCategory,
+  IdeationSession,
   ProjectAnalysisResult,
-  AnalysisSuggestion,
+  PromptCategory,
   StartSessionOptions,
-  CreateIdeaInput,
   UpdateIdeaInput,
-  ConvertToFeatureOptions,
 };
 
 // Ideation API interface
@@ -202,24 +202,24 @@ export interface CreatePROptions {
 // Re-export types from electron.d.ts for external use
 export type {
   AutoModeEvent,
+  FileDiffResult,
+  FileDiffsResult,
+  FileStatus,
+  GitAPI,
   ModelDefinition,
   ProviderStatus,
   WorktreeAPI,
-  GitAPI,
   WorktreeInfo,
   WorktreeStatus,
-  FileDiffsResult,
-  FileDiffResult,
-  FileStatus,
 } from '@/types/electron';
 
 // Import types for internal use in this file
 import type {
   AutoModeEvent,
-  WorktreeAPI,
   GitAPI,
   ModelDefinition,
   ProviderStatus,
+  WorktreeAPI,
 } from '@/types/electron';
 
 // Import HTTP API client (ES module)
@@ -544,11 +544,11 @@ export interface SaveImageResult {
 
 // Notifications API interface
 import type {
+  EventHistoryFilter,
+  EventReplayResult,
   Notification,
   StoredEvent,
   StoredEventSummary,
-  EventHistoryFilter,
-  EventReplayResult,
 } from '@automaker/types';
 
 export interface NotificationsAPI {
@@ -2780,7 +2780,7 @@ function createMockAutoModeAPI(): AutoModeAPI {
   <project_name>Demo Project</project_name>
 
   <overview>
-    A demo project analyzed by the Automaker AI agent.
+    A demo project analyzed by the Instabuild AI agent.
   </overview>
 
   <technology_stack>

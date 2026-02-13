@@ -11,20 +11,20 @@
  */
 
 import type {
-  ResolvedAutoModePrompts,
   ResolvedAgentPrompts,
-  ResolvedBacklogPlanPrompts,
-  ResolvedEnhancementPrompts,
-  ResolvedCommitMessagePrompts,
-  ResolvedTitleGenerationPrompts,
-  ResolvedIssueValidationPrompts,
-  ResolvedIdeationPrompts,
   ResolvedAppSpecPrompts,
+  ResolvedAutoModePrompts,
+  ResolvedBacklogPlanPrompts,
+  ResolvedCommitMessagePrompts,
   ResolvedContextDescriptionPrompts,
+  ResolvedEnhancementPrompts,
+  ResolvedIdeationPrompts,
+  ResolvedIssueValidationPrompts,
   ResolvedSuggestionsPrompts,
   ResolvedTaskExecutionPrompts,
+  ResolvedTitleGenerationPrompts,
 } from '@automaker/types';
-import { STATIC_PORT, SERVER_PORT } from '@automaker/types';
+import { SERVER_PORT, STATIC_PORT } from '@automaker/types';
 
 /**
  * ========================================================================
@@ -253,7 +253,7 @@ This feature depends on: {{dependencies}}
 {{/if}}
 
 **CRITICAL - Port Protection:**
-NEVER kill or terminate processes running on ports ${STATIC_PORT} or ${SERVER_PORT}. These are reserved for the Automaker application. Killing these ports will crash Automaker and terminate this session.
+NEVER kill or terminate processes running on ports ${STATIC_PORT} or ${SERVER_PORT}. These are reserved for the Instabuild application. Killing these ports will crash Instabuild and terminate this session.
 `;
 
 export const DEFAULT_AUTO_MODE_FOLLOW_UP_PROMPT_TEMPLATE = `## Follow-up on Feature Implementation
@@ -313,7 +313,7 @@ export const DEFAULT_AUTO_MODE_PROMPTS: ResolvedAutoModePrompts = {
  * ========================================================================
  */
 
-export const DEFAULT_AGENT_SYSTEM_PROMPT = `You are an AI assistant helping users build software. You are part of the Automaker application,
+export const DEFAULT_AGENT_SYSTEM_PROMPT = `You are an AI assistant helping users build software. You are part of the Instabuild application,
 which is designed to help developers plan, design, and implement software projects autonomously.
 
 **Feature Storage:**
@@ -346,7 +346,7 @@ You have access to several tools:
 5. Guide users toward good software design principles
 
 **CRITICAL - Port Protection:**
-NEVER kill or terminate processes running on ports ${STATIC_PORT} or ${SERVER_PORT}. These are reserved for the Automaker application itself. Killing these ports will crash Automaker and terminate your session.
+NEVER kill or terminate processes running on ports ${STATIC_PORT} or ${SERVER_PORT}. These are reserved for the Instabuild application itself. Killing these ports will crash Instabuild and terminate your session.
 
 Remember: You're a collaborative partner in the development process. Be helpful, clear, and thorough.`;
 
@@ -456,10 +456,10 @@ export const DEFAULT_BACKLOG_PLAN_PROMPTS: ResolvedBacklogPlanPrompts = {
  */
 
 import {
-  IMPROVE_SYSTEM_PROMPT,
-  TECHNICAL_SYSTEM_PROMPT,
-  SIMPLIFY_SYSTEM_PROMPT,
   ACCEPTANCE_SYSTEM_PROMPT,
+  IMPROVE_SYSTEM_PROMPT,
+  SIMPLIFY_SYSTEM_PROMPT,
+  TECHNICAL_SYSTEM_PROMPT,
   UX_REVIEWER_SYSTEM_PROMPT,
 } from './enhancement.js';
 
