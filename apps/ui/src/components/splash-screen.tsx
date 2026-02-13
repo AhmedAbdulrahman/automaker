@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const TOTAL_DURATION = 2300; // Total animation duration in ms (tightened from 4000)
 const LOGO_ENTER_DURATION = 500; // Tightened from 1200
@@ -274,7 +274,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
         }}
       >
         <span className="font-bold text-foreground text-4xl tracking-tight leading-none">
-          automaker<span className="text-brand-500">.</span>
+          instabuild<span className="text-brand-500">.</span>
         </span>
       </div>
     </div>

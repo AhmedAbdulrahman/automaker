@@ -1,5 +1,5 @@
 /**
- * Automaker Paths - Utilities for managing automaker data storage
+ * Instabuild Paths - Utilities for managing Instabuild data storage
  *
  * Provides functions to construct paths for:
  * - Project-level data stored in {projectPath}/.automaker/
@@ -9,8 +9,8 @@
  * Directory creation is handled separately by ensure* functions.
  */
 
-import * as secureFs from './secure-fs.js';
 import path from 'path';
+import * as secureFs from './secure-fs.js';
 
 /**
  * Get the automaker data directory root for a project

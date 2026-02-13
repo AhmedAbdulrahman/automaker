@@ -1,23 +1,77 @@
 /**
- * Automaker Backend Server
+ * Instabuild Backend Server
  *
  * Provides HTTP/WebSocket API for both web and Electron modes.
  * In Electron mode, this server runs locally.
  * In web mode, this server runs on a remote host.
  */
 
-import express from 'express';
-import cors from 'cors';
-import morgan from 'morgan';
-import cookieParser from 'cookie-parser';
 import cookie from 'cookie';
-import { WebSocketServer, WebSocket } from 'ws';
-import { createServer } from 'http';
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
 import dotenv from 'dotenv';
+import express from 'express';
+import { createServer } from 'http';
+import morgan from 'morgan';
+import { WebSocket, WebSocketServer } from 'ws';
 
+import { getClaudeAuthIndicators, initAllowedPaths } from '@automaker/platform';
+import { createLogger, LogLevel, setLogLevel } from '@automaker/utils';
+import { authMiddleware, checkRawAuthentication, validateWsConnectionToken } from './lib/auth.js';
 import { createEventEmitter, type EventEmitter } from './lib/events.js';
-import { initAllowedPaths, getClaudeAuthIndicators } from '@automaker/platform';
-import { createLogger, setLogLevel, LogLevel } from '@automaker/utils';
+import { requireJsonContentType } from './middleware/require-json-content-type.js';
+import { createAgentRoutes } from './routes/agent/index.js';
+import { createSpecRegenerationRoutes } from './routes/app-spec/index.js';
+import { createAuthRoutes } from './routes/auth/index.js';
+import { createAutoModeRoutes } from './routes/auto-mode/index.js';
+import { createBacklogPlanRoutes } from './routes/backlog-plan/index.js';
+import { createClaudeRoutes } from './routes/claude/index.js';
+import { createCodexRoutes } from './routes/codex/index.js';
+import { createContextRoutes } from './routes/context/index.js';
+import { createEnhancePromptRoutes } from './routes/enhance-prompt/index.js';
+import { createEventHistoryRoutes } from './routes/event-history/index.js';
+import { createFeaturesRoutes } from './routes/features/index.js';
+import { createFsRoutes } from './routes/fs/index.js';
+import { createGitRoutes } from './routes/git/index.js';
+import { createGitHubRoutes } from './routes/github/index.js';
+import { cleanupStaleValidations } from './routes/github/routes/validation-common.js';
+import { createDetailedHandler, createHealthRoutes } from './routes/health/index.js';
+import { createIdeationRoutes } from './routes/ideation/index.js';
+import { createMCPRoutes } from './routes/mcp/index.js';
+import { createModelsRoutes } from './routes/models/index.js';
+import { createNotificationsRoutes } from './routes/notifications/index.js';
+import { createPipelineRoutes } from './routes/pipeline/index.js';
+import { createProjectsRoutes } from './routes/projects/index.js';
+import { createRunningAgentsRoutes } from './routes/running-agents/index.js';
+import { createSessionsRoutes } from './routes/sessions/index.js';
+import { createSettingsRoutes } from './routes/settings/index.js';
+import { createSetupRoutes } from './routes/setup/index.js';
+import { createTemplatesRoutes } from './routes/templates/index.js';
+import {
+  createTerminalRoutes,
+  isTerminalEnabled,
+  isTerminalPasswordRequired,
+  validateTerminalToken,
+} from './routes/terminal/index.js';
+import { createWorkspaceRoutes } from './routes/workspace/index.js';
+import { createWorktreeRoutes } from './routes/worktree/index.js';
+import { AgentService } from './services/agent-service.js';
+import { AutoModeService } from './services/auto-mode-service.js';
+import { ClaudeUsageService } from './services/claude-usage-service.js';
+import { CodexAppServerService } from './services/codex-app-server-service.js';
+import { CodexModelCacheService } from './services/codex-model-cache-service.js';
+import { CodexUsageService } from './services/codex-usage-service.js';
+import { getDevServerService } from './services/dev-server-service.js';
+import { getEventHistoryService } from './services/event-history-service.js';
+import { eventHookService } from './services/event-hook-service.js';
+import { FeatureLoader } from './services/feature-loader.js';
+import { IdeationService } from './services/ideation-service.js';
+import { MCPTestService } from './services/mcp-test-service.js';
+import { getNotificationService } from './services/notification-service.js';
+import { pipelineService } from './services/pipeline-service.js';
+import { SettingsService } from './services/settings-service.js';
+import { getTerminalService } from './services/terminal-service.js';
+import { getTestRunnerService } from './services/test-runner-service.js';
 
 const logger = createLogger('Server');
 
@@ -30,60 +84,6 @@ const LOG_LEVEL_MAP: Record<string, LogLevel> = {
   info: LogLevel.INFO,
   debug: LogLevel.DEBUG,
 };
-import { authMiddleware, validateWsConnectionToken, checkRawAuthentication } from './lib/auth.js';
-import { requireJsonContentType } from './middleware/require-json-content-type.js';
-import { createAuthRoutes } from './routes/auth/index.js';
-import { createFsRoutes } from './routes/fs/index.js';
-import { createHealthRoutes, createDetailedHandler } from './routes/health/index.js';
-import { createAgentRoutes } from './routes/agent/index.js';
-import { createSessionsRoutes } from './routes/sessions/index.js';
-import { createFeaturesRoutes } from './routes/features/index.js';
-import { createAutoModeRoutes } from './routes/auto-mode/index.js';
-import { createEnhancePromptRoutes } from './routes/enhance-prompt/index.js';
-import { createWorktreeRoutes } from './routes/worktree/index.js';
-import { createGitRoutes } from './routes/git/index.js';
-import { createSetupRoutes } from './routes/setup/index.js';
-import { createModelsRoutes } from './routes/models/index.js';
-import { createRunningAgentsRoutes } from './routes/running-agents/index.js';
-import { createWorkspaceRoutes } from './routes/workspace/index.js';
-import { createTemplatesRoutes } from './routes/templates/index.js';
-import {
-  createTerminalRoutes,
-  validateTerminalToken,
-  isTerminalEnabled,
-  isTerminalPasswordRequired,
-} from './routes/terminal/index.js';
-import { createSettingsRoutes } from './routes/settings/index.js';
-import { AgentService } from './services/agent-service.js';
-import { FeatureLoader } from './services/feature-loader.js';
-import { AutoModeService } from './services/auto-mode-service.js';
-import { getTerminalService } from './services/terminal-service.js';
-import { SettingsService } from './services/settings-service.js';
-import { createSpecRegenerationRoutes } from './routes/app-spec/index.js';
-import { createClaudeRoutes } from './routes/claude/index.js';
-import { ClaudeUsageService } from './services/claude-usage-service.js';
-import { createCodexRoutes } from './routes/codex/index.js';
-import { CodexUsageService } from './services/codex-usage-service.js';
-import { CodexAppServerService } from './services/codex-app-server-service.js';
-import { CodexModelCacheService } from './services/codex-model-cache-service.js';
-import { createGitHubRoutes } from './routes/github/index.js';
-import { createContextRoutes } from './routes/context/index.js';
-import { createBacklogPlanRoutes } from './routes/backlog-plan/index.js';
-import { cleanupStaleValidations } from './routes/github/routes/validation-common.js';
-import { createMCPRoutes } from './routes/mcp/index.js';
-import { MCPTestService } from './services/mcp-test-service.js';
-import { createPipelineRoutes } from './routes/pipeline/index.js';
-import { pipelineService } from './services/pipeline-service.js';
-import { createIdeationRoutes } from './routes/ideation/index.js';
-import { IdeationService } from './services/ideation-service.js';
-import { getDevServerService } from './services/dev-server-service.js';
-import { eventHookService } from './services/event-hook-service.js';
-import { createNotificationsRoutes } from './routes/notifications/index.js';
-import { getNotificationService } from './services/notification-service.js';
-import { createEventHistoryRoutes } from './routes/event-history/index.js';
-import { getEventHistoryService } from './services/event-history-service.js';
-import { getTestRunnerService } from './services/test-runner-service.js';
-import { createProjectsRoutes } from './routes/projects/index.js';
 
 // Load environment variables
 dotenv.config();
@@ -709,7 +709,7 @@ const startServer = (port: number, host: string) => {
     const wsTerminalUrl = `ws://${HOSTNAME}:${port}/api/terminal/ws`;
     const healthUrl = `http://${HOSTNAME}:${port}/api/health`;
 
-    const sHeader = '🚀 Automaker Backend Server'.padEnd(BOX_CONTENT_WIDTH);
+    const sHeader = '🚀 Instabuild Backend Server'.padEnd(BOX_CONTENT_WIDTH);
     const s1 = `Listening:    ${listenAddr}`.padEnd(BOX_CONTENT_WIDTH);
     const s2 = `HTTP API:     ${httpUrl}`.padEnd(BOX_CONTENT_WIDTH);
     const s3 = `WebSocket:    ${wsEventsUrl}`.padEnd(BOX_CONTENT_WIDTH);
