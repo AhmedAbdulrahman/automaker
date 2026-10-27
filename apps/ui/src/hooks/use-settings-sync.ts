@@ -19,11 +19,13 @@ import { useAppStore, type ThemeMode, THEME_STORAGE_KEY } from '@/store/app-stor
 import { useSetupStore } from '@/store/setup-store';
 import { useAuthStore } from '@/store/auth-store';
 import { waitForMigrationComplete, resetMigrationState } from './use-settings-migration';
+import { sanitizeWorktreeByProject } from '@/lib/settings-utils';
 import {
   DEFAULT_OPENCODE_MODEL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_COPILOT_MODEL,
   DEFAULT_MAX_CONCURRENCY,
+  DEFAULT_PHASE_MODELS,
   getAllOpencodeModelIds,
   getAllCursorModelIds,
   getAllGeminiModelIds,
@@ -35,6 +37,7 @@ import {
   type CursorModelId,
   type GeminiModelId,
   type CopilotModelId,
+  type PhaseModelEntry,
 } from '@automaker/types';
 
 const logger = createLogger('SettingsSync');
@@ -49,6 +52,8 @@ const SETTINGS_FIELDS_TO_SYNC = [
   'fontFamilyMono',
   'terminalFontFamily', // Maps to terminalState.fontFamily
   'openTerminalMode', // Maps to terminalState.openTerminalMode
+  'terminalCustomBackgroundColor', // Maps to terminalState.customBackgroundColor
+  'terminalCustomForegroundColor', // Maps to terminalState.customForegroundColor
   'sidebarOpen',
   'sidebarStyle',
   'collapsedNavSections',
@@ -58,18 +63,22 @@ const SETTINGS_FIELDS_TO_SYNC = [
   'defaultSkipTests',
   'enableDependencyBlocking',
   'skipVerificationInAutoMode',
+  'mergePostAction',
   'useWorktrees',
   'defaultPlanningMode',
   'defaultRequirePlanApproval',
   'defaultFeatureModel',
   'muteDoneSound',
   'disableSplashScreen',
+  'defaultSortNewestCardOnTop',
   'serverLogLevel',
   'enableRequestLogging',
   'showQueryDevtools',
   'enhancementModel',
   'validationModel',
   'phaseModels',
+  'defaultThinkingLevel',
+  'defaultReasoningEffort',
   'enabledCursorModels',
   'cursorDefaultModel',
   'enabledOpencodeModels',
@@ -79,14 +88,28 @@ const SETTINGS_FIELDS_TO_SYNC = [
   'enabledCopilotModels',
   'copilotDefaultModel',
   'enabledDynamicModelIds',
+  'knownDynamicModelIds',
   'disabledProviders',
   'autoLoadClaudeMd',
+  'useClaudeCodeSystemPrompt',
   'keyboardShortcuts',
   'mcpServers',
   'defaultEditorCommand',
+  'editorFontSize',
+  'editorFontFamily',
+  'editorAutoSave',
+  'editorAutoSaveDelay',
   'defaultTerminalId',
+  'enableAiCommitMessages',
+  'enableSkills',
+  'skillsSources',
+  'enableSubagents',
+  'subagentsSources',
   'promptCustomization',
   'eventHooks',
+  'ntfyEndpoints',
+  'featureTemplates',
+  'claudeCompatibleProviders', // Claude-compatible provider configs - must persist to server
   'claudeApiProfiles',
   'activeClaudeApiProfileId',
   'projects',
@@ -95,6 +118,18 @@ const SETTINGS_FIELDS_TO_SYNC = [
   'projectHistory',
   'projectHistoryIndex',
   'lastSelectedSessionByProject',
+  'agentModelBySession',
+  'currentWorktreeByProject',
+  // Codex CLI Settings
+  'codexAutoLoadAgents',
+  'codexSandboxMode',
+  'codexApprovalPolicy',
+  'codexEnableWebSearch',
+  'codexEnableImages',
+  'codexAdditionalDirs',
+  'codexThreadId',
+  // Max Turns Setting
+  'defaultMaxTurns',
   // UI State (previously in localStorage)
   'worktreePanelCollapsed',
   'lastProjectDir',
@@ -129,6 +164,12 @@ function getSettingsFieldValue(
   if (field === 'openTerminalMode') {
     return appState.terminalState.openTerminalMode;
   }
+  if (field === 'terminalCustomBackgroundColor') {
+    return appState.terminalState.customBackgroundColor;
+  }
+  if (field === 'terminalCustomForegroundColor') {
+    return appState.terminalState.customForegroundColor;
+  }
   if (field === 'autoModeByWorktree') {
     // Only persist settings (maxConcurrency), not runtime state (isRunning, runningTasks)
     const autoModeByWorktree = appState.autoModeByWorktree;
@@ -141,6 +182,17 @@ function getSettingsFieldValue(
       };
     }
     return persistedSettings;
+  }
+  if (field === 'agentModelBySession') {
+    // Cap to the 50 most-recently-inserted session entries to prevent unbounded growth.
+    // agentModelBySession grows by one entry per agent session — without pruning this
+    // will bloat settings.json, every debounced sync payload, and the localStorage cache.
+    const map = appState.agentModelBySession as Record<string, unknown>;
+    const MAX_ENTRIES = 50;
+    const entries = Object.entries(map);
+    if (entries.length <= MAX_ENTRIES) return map;
+    // Keep the last MAX_ENTRIES entries (insertion-order approximation for recency)
+    return Object.fromEntries(entries.slice(-MAX_ENTRIES));
   }
   return appState[field as keyof typeof appState];
 }
@@ -171,6 +223,16 @@ function hasSettingsFieldChanged(
   }
   if (field === 'openTerminalMode') {
     return newState.terminalState.openTerminalMode !== prevState.terminalState.openTerminalMode;
+  }
+  if (field === 'terminalCustomBackgroundColor') {
+    return (
+      newState.terminalState.customBackgroundColor !== prevState.terminalState.customBackgroundColor
+    );
+  }
+  if (field === 'terminalCustomForegroundColor') {
+    return (
+      newState.terminalState.customForegroundColor !== prevState.terminalState.customForegroundColor
+    );
   }
   const key = field as keyof typeof newState;
   return newState[key] !== prevState[key];
@@ -392,6 +454,7 @@ export function useSettingsSync(): SettingsSyncState {
     }
 
     initializeSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- state.loaded is intentionally excluded to prevent infinite loop
   }, [authChecked, isAuthenticated, settingsLoaded]);
 
   // Subscribe to store changes and sync to server
@@ -423,18 +486,46 @@ export function useSettingsSync(): SettingsSyncState {
         return;
       }
 
-      // If projects array changed (by reference, meaning content changed), sync immediately
-      // This is critical - projects list changes must sync right away to prevent loss
-      // when switching between Electron and web modes or closing the app
-      if (newState.projects !== prevState.projects) {
-        logger.info('[PROJECTS_CHANGED] Projects array changed, syncing immediately', {
-          prevCount: prevState.projects?.length ?? 0,
-          newCount: newState.projects?.length ?? 0,
-          prevProjects: prevState.projects?.map((p) => p.name) ?? [],
-          newProjects: newState.projects?.map((p) => p.name) ?? [],
-        });
+      // If the sort preference changed, sync immediately so it survives a page refresh
+      // before the debounce timer fires (1s debounce would be lost on quick refresh).
+      if (newState.defaultSortNewestCardOnTop !== prevState.defaultSortNewestCardOnTop) {
+        logger.debug('defaultSortNewestCardOnTop changed, syncing immediately');
         syncNow();
         return;
+      }
+
+      // If projects array changed *meaningfully*, sync immediately.
+      // This is critical — projects list changes must sync right away to prevent loss
+      // when switching between Electron and web modes or closing the app.
+      //
+      // We compare by content (IDs, names, and paths), NOT by reference. The background
+      // reconcile in __root.tsx calls hydrateStoreFromSettings() with server data,
+      // which always creates a new projects array (.map() produces a new reference).
+      // A reference-only check would trigger an immediate sync-back to the server
+      // with identical data, causing a visible re-render flash on mobile.
+      if (newState.projects !== prevState.projects) {
+        const prevIds = prevState.projects
+          ?.map((p) => JSON.stringify([p.id, p.name, p.path]))
+          .join(',');
+        const newIds = newState.projects
+          ?.map((p) => JSON.stringify([p.id, p.name, p.path]))
+          .join(',');
+        if (prevIds !== newIds) {
+          logger.info('[PROJECTS_CHANGED] Projects array changed, syncing immediately', {
+            prevCount: prevState.projects?.length ?? 0,
+            newCount: newState.projects?.length ?? 0,
+          });
+          syncNow();
+          // Don't return here — fall through so the general loop below can still
+          // detect and schedule a debounced sync for other project-field mutations
+          // (e.g. lastOpened) that the id/name/path comparison above doesn't cover.
+        } else {
+          // The projects array reference changed but id/name/path are identical.
+          // This means nested project fields mutated (e.g. lastOpened, remotes).
+          // Schedule a debounced sync so these mutations reach the server.
+          logger.debug('[PROJECTS_NESTED_CHANGE] Projects nested fields changed, scheduling sync');
+          scheduleSyncToServer();
+        }
       }
 
       // Check if any other synced field changed
@@ -522,6 +613,15 @@ export async function forceSyncSettingsToServer(): Promise<boolean> {
     const setupState = useSetupStore.getState();
     for (const field of SETUP_FIELDS_TO_SYNC) {
       updates[field] = setupState[field as keyof typeof setupState];
+    }
+
+    // Update localStorage cache immediately so a page reload before the
+    // server response arrives still sees the latest state (e.g. after
+    // deleting a worktree, the stale worktree path won't survive in cache).
+    try {
+      setItem('automaker-settings-cache', JSON.stringify(updates));
+    } catch (storageError) {
+      logger.warn('Failed to update localStorage cache during force sync:', storageError);
     }
 
     const result = await api.settings.updateGlobal(updates);
@@ -617,6 +717,12 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       (modelId) => !modelId.startsWith('amazon-bedrock/')
     );
 
+    const persistedKnownDynamicModelIds =
+      serverSettings.knownDynamicModelIds ?? currentAppState.knownDynamicModelIds;
+    const sanitizedKnownDynamicModelIds = persistedKnownDynamicModelIds.filter(
+      (modelId) => !modelId.startsWith('amazon-bedrock/')
+    );
+
     // Migrate phase models to canonical format
     const migratedPhaseModels = serverSettings.phaseModels
       ? {
@@ -645,6 +751,7 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
             serverSettings.phaseModels.memoryExtractionModel
           ),
           commitMessageModel: migratePhaseModelEntry(serverSettings.phaseModels.commitMessageModel),
+          prDescriptionModel: migratePhaseModelEntry(serverSettings.phaseModels.prDescriptionModel),
         }
       : undefined;
 
@@ -689,19 +796,27 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       defaultSkipTests: serverSettings.defaultSkipTests,
       enableDependencyBlocking: serverSettings.enableDependencyBlocking,
       skipVerificationInAutoMode: serverSettings.skipVerificationInAutoMode,
+      mergePostAction: serverSettings.mergePostAction ?? null,
       useWorktrees: serverSettings.useWorktrees,
       defaultPlanningMode: serverSettings.defaultPlanningMode,
       defaultRequirePlanApproval: serverSettings.defaultRequirePlanApproval,
       defaultFeatureModel: serverSettings.defaultFeatureModel
         ? migratePhaseModelEntry(serverSettings.defaultFeatureModel)
-        : { model: 'claude-opus' },
+        : { model: 'claude-opus', thinkingLevel: 'adaptive' },
       muteDoneSound: serverSettings.muteDoneSound,
+      defaultMaxTurns: serverSettings.defaultMaxTurns ?? 10000,
       disableSplashScreen: serverSettings.disableSplashScreen ?? false,
+      defaultSortNewestCardOnTop: serverSettings.defaultSortNewestCardOnTop ?? false,
       serverLogLevel: serverSettings.serverLogLevel ?? 'info',
       enableRequestLogging: serverSettings.enableRequestLogging ?? true,
       enhancementModel: serverSettings.enhancementModel,
       validationModel: serverSettings.validationModel,
-      phaseModels: migratedPhaseModels ?? serverSettings.phaseModels,
+      phaseModels: {
+        ...DEFAULT_PHASE_MODELS,
+        ...(migratedPhaseModels ?? serverSettings.phaseModels),
+      },
+      defaultThinkingLevel: serverSettings.defaultThinkingLevel ?? 'adaptive',
+      defaultReasoningEffort: serverSettings.defaultReasoningEffort ?? 'none',
       enabledCursorModels: allCursorModels, // Always use ALL cursor models
       cursorDefaultModel: sanitizedCursorDefault,
       enabledOpencodeModels: sanitizedEnabledOpencodeModels,
@@ -711,8 +826,10 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       enabledCopilotModels: sanitizedEnabledCopilotModels,
       copilotDefaultModel: sanitizedCopilotDefaultModel,
       enabledDynamicModelIds: sanitizedDynamicModelIds,
+      knownDynamicModelIds: sanitizedKnownDynamicModelIds,
       disabledProviders: serverSettings.disabledProviders ?? [],
-      autoLoadClaudeMd: serverSettings.autoLoadClaudeMd ?? false,
+      autoLoadClaudeMd: serverSettings.autoLoadClaudeMd ?? true,
+      useClaudeCodeSystemPrompt: serverSettings.useClaudeCodeSystemPrompt ?? true,
       keyboardShortcuts: {
         ...currentAppState.keyboardShortcuts,
         ...(serverSettings.keyboardShortcuts as unknown as Partial<
@@ -721,8 +838,15 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       },
       mcpServers: serverSettings.mcpServers,
       defaultEditorCommand: serverSettings.defaultEditorCommand ?? null,
+      editorFontSize: serverSettings.editorFontSize ?? 13,
+      editorFontFamily: serverSettings.editorFontFamily ?? 'default',
+      editorAutoSave: serverSettings.editorAutoSave ?? false,
+      editorAutoSaveDelay: serverSettings.editorAutoSaveDelay ?? 1000,
       defaultTerminalId: serverSettings.defaultTerminalId ?? null,
       promptCustomization: serverSettings.promptCustomization ?? {},
+      // Claude-compatible providers - must be loaded from server for persistence
+      claudeCompatibleProviders: serverSettings.claudeCompatibleProviders ?? [],
+      // Deprecated Claude API profiles (kept for migration)
       claudeApiProfiles: serverSettings.claudeApiProfiles ?? [],
       activeClaudeApiProfileId: serverSettings.activeClaudeApiProfileId ?? null,
       projects: serverSettings.projects,
@@ -730,14 +854,46 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       projectHistory: serverSettings.projectHistory,
       projectHistoryIndex: serverSettings.projectHistoryIndex,
       lastSelectedSessionByProject: serverSettings.lastSelectedSessionByProject,
+      agentModelBySession: serverSettings.agentModelBySession
+        ? Object.fromEntries(
+            Object.entries(serverSettings.agentModelBySession as Record<string, unknown>).map(
+              ([sessionId, entry]) => [
+                sessionId,
+                migratePhaseModelEntry(entry as string | PhaseModelEntry | null | undefined),
+              ]
+            )
+          )
+        : currentAppState.agentModelBySession,
+      // Restore all valid worktree selections (both main branch and feature worktrees).
+      // The validation effect in use-worktrees.ts handles deleted worktrees gracefully.
+      currentWorktreeByProject: sanitizeWorktreeByProject(
+        serverSettings.currentWorktreeByProject ?? currentAppState.currentWorktreeByProject
+      ),
       // UI State (previously in localStorage)
       worktreePanelCollapsed: serverSettings.worktreePanelCollapsed ?? false,
       lastProjectDir: serverSettings.lastProjectDir ?? '',
       recentFolders: serverSettings.recentFolders ?? [],
       // Event hooks
       eventHooks: serverSettings.eventHooks ?? [],
+      // Ntfy endpoints
+      ntfyEndpoints: serverSettings.ntfyEndpoints ?? [],
+      // Feature templates
+      featureTemplates: serverSettings.featureTemplates ?? [],
+      // Codex CLI Settings
+      codexAutoLoadAgents: serverSettings.codexAutoLoadAgents ?? false,
+      codexSandboxMode: serverSettings.codexSandboxMode ?? 'workspace-write',
+      codexApprovalPolicy: serverSettings.codexApprovalPolicy ?? 'on-request',
+      codexEnableWebSearch: serverSettings.codexEnableWebSearch ?? false,
+      codexEnableImages: serverSettings.codexEnableImages ?? true,
+      codexAdditionalDirs: serverSettings.codexAdditionalDirs ?? [],
+      codexThreadId: serverSettings.codexThreadId,
       // Terminal settings (nested in terminalState)
-      ...((serverSettings.terminalFontFamily || serverSettings.openTerminalMode) && {
+      ...((serverSettings.terminalFontFamily ||
+        serverSettings.openTerminalMode ||
+        (serverSettings as unknown as Record<string, unknown>).terminalCustomBackgroundColor !==
+          undefined ||
+        (serverSettings as unknown as Record<string, unknown>).terminalCustomForegroundColor !==
+          undefined) && {
         terminalState: {
           ...currentAppState.terminalState,
           ...(serverSettings.terminalFontFamily && {
@@ -745,6 +901,16 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
           }),
           ...(serverSettings.openTerminalMode && {
             openTerminalMode: serverSettings.openTerminalMode,
+          }),
+          ...((serverSettings as unknown as Record<string, unknown>)
+            .terminalCustomBackgroundColor !== undefined && {
+            customBackgroundColor: (serverSettings as unknown as Record<string, unknown>)
+              .terminalCustomBackgroundColor as string | null,
+          }),
+          ...((serverSettings as unknown as Record<string, unknown>)
+            .terminalCustomForegroundColor !== undefined && {
+            customForegroundColor: (serverSettings as unknown as Record<string, unknown>)
+              .terminalCustomForegroundColor as string | null,
           }),
         },
       }),

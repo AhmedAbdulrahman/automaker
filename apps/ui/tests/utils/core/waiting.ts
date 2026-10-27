@@ -1,6 +1,13 @@
 import { Page, Locator } from '@playwright/test';
 
 /**
+ * Default timeout for element waiting operations in E2E tests.
+ * Increased from 5000ms to 10000ms to accommodate CI environments
+ * where dialog rendering may take longer due to React Query data fetching.
+ */
+export const DEFAULT_ELEMENT_TIMEOUT_MS = 10000;
+
+/**
  * Wait for the page to load
  * Uses 'load' state instead of 'networkidle' because the app has persistent
  * connections (websockets/polling) that prevent network from ever being idle.
@@ -20,7 +27,7 @@ export async function waitForElement(
 ): Promise<Locator> {
   const element = page.locator(`[data-testid="${testId}"]`);
   await element.waitFor({
-    timeout: options?.timeout ?? 5000,
+    timeout: options?.timeout ?? DEFAULT_ELEMENT_TIMEOUT_MS,
     state: options?.state ?? 'visible',
   });
   return element;
@@ -36,7 +43,7 @@ export async function waitForElementHidden(
 ): Promise<void> {
   const element = page.locator(`[data-testid="${testId}"]`);
   await element.waitFor({
-    timeout: options?.timeout ?? 5000,
+    timeout: options?.timeout ?? DEFAULT_ELEMENT_TIMEOUT_MS,
     state: 'hidden',
   });
 }
@@ -47,13 +54,16 @@ export async function waitForElementHidden(
  */
 export async function waitForSplashScreenToDisappear(page: Page, timeout = 5000): Promise<void> {
   try {
-    // Check if splash screen is shown via sessionStorage first (fastest check)
-    const splashShown = await page.evaluate(() => {
-      return sessionStorage.getItem('automaker-splash-shown') === 'true';
+    // Check if splash screen is disabled or already shown (fastest check)
+    const splashDisabled = await page.evaluate(() => {
+      return (
+        localStorage.getItem('automaker-disable-splash') === 'true' ||
+        localStorage.getItem('automaker-splash-shown-session') === 'true'
+      );
     });
 
-    // If splash is already marked as shown, it won't appear, so we're done
-    if (splashShown) {
+    // If splash is disabled or already shown, it won't appear, so we're done
+    if (splashDisabled) {
       return;
     }
 
@@ -62,8 +72,11 @@ export async function waitForSplashScreenToDisappear(page: Page, timeout = 5000)
     // We check for elements that match the splash screen pattern
     await page.waitForFunction(
       () => {
-        // Check if splash is marked as shown in sessionStorage
-        if (sessionStorage.getItem('automaker-splash-shown') === 'true') {
+        // Check if splash is disabled or already shown
+        if (
+          localStorage.getItem('automaker-disable-splash') === 'true' ||
+          localStorage.getItem('automaker-splash-shown-session') === 'true'
+        ) {
           return true;
         }
 

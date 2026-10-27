@@ -8,10 +8,13 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-const SERVER_PORT = process.env.TEST_SERVER_PORT || 3008;
-const UI_PORT = process.env.TEST_PORT || 3007;
-const USE_EXTERNAL_SERVER = !!process.env.VITE_SERVER_URL;
-
+const SERVER_PORT = process.env.TEST_SERVER_PORT || 3108;
+const UI_PORT = process.env.TEST_PORT || 3107;
+// Match Playwright config semantics: only explicit opt-in should skip backend startup/cleanup.
+// VITE_SERVER_URL may exist in local shells and should not implicitly affect test behavior.
+const USE_EXTERNAL_SERVER = process.env.TEST_USE_EXTERNAL_BACKEND === 'true';
+console.log(`[KillTestServers] SERVER_PORT ${SERVER_PORT}`);
+console.log(`[KillTestServers] UI_PORT ${UI_PORT}`);
 async function killProcessOnPort(port) {
   try {
     const hasLsof = await execAsync('command -v lsof').then(

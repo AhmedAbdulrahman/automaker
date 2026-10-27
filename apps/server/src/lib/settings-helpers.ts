@@ -33,9 +33,16 @@ import {
 
 const logger = createLogger('SettingsHelper');
 
+/** Default number of agent turns used when no value is configured. */
+export const DEFAULT_MAX_TURNS = 10000;
+
+/** Upper bound for the max-turns clamp; values above this are capped here. */
+export const MAX_ALLOWED_TURNS = 10000;
+
 /**
  * Get the autoLoadClaudeMd setting, with project settings taking precedence over global.
- * Returns false if settings service is not available.
+ * Falls back to global settings and defaults to true when unset.
+ * Returns true if settings service is not available.
  *
  * @param projectPath - Path to the project
  * @param settingsService - Optional settings service instance
@@ -48,8 +55,8 @@ export async function getAutoLoadClaudeMdSetting(
   logPrefix = '[SettingsHelper]'
 ): Promise<boolean> {
   if (!settingsService) {
-    logger.info(`${logPrefix} SettingsService not available, autoLoadClaudeMd disabled`);
-    return false;
+    logger.info(`${logPrefix} SettingsService not available, autoLoadClaudeMd defaulting to true`);
+    return true;
   }
 
   try {
@@ -64,12 +71,90 @@ export async function getAutoLoadClaudeMdSetting(
 
     // Fall back to global settings
     const globalSettings = await settingsService.getGlobalSettings();
-    const result = globalSettings.autoLoadClaudeMd ?? false;
+    const result = globalSettings.autoLoadClaudeMd ?? true;
     logger.info(`${logPrefix} autoLoadClaudeMd from global settings: ${result}`);
     return result;
   } catch (error) {
     logger.error(`${logPrefix} Failed to load autoLoadClaudeMd setting:`, error);
     throw error;
+  }
+}
+
+/**
+ * Get the useClaudeCodeSystemPrompt setting, with project settings taking precedence over global.
+ * Falls back to global settings and defaults to true when unset.
+ * Returns true if settings service is not available.
+ *
+ * @param projectPath - Path to the project
+ * @param settingsService - Optional settings service instance
+ * @param logPrefix - Prefix for log messages (e.g., '[AgentService]')
+ * @returns Promise resolving to the useClaudeCodeSystemPrompt setting value
+ */
+export async function getUseClaudeCodeSystemPromptSetting(
+  projectPath: string,
+  settingsService?: SettingsService | null,
+  logPrefix = '[SettingsHelper]'
+): Promise<boolean> {
+  if (!settingsService) {
+    logger.info(
+      `${logPrefix} SettingsService not available, useClaudeCodeSystemPrompt defaulting to true`
+    );
+    return true;
+  }
+
+  try {
+    // Check project settings first (takes precedence)
+    const projectSettings = await settingsService.getProjectSettings(projectPath);
+    if (projectSettings.useClaudeCodeSystemPrompt !== undefined) {
+      logger.info(
+        `${logPrefix} useClaudeCodeSystemPrompt from project settings: ${projectSettings.useClaudeCodeSystemPrompt}`
+      );
+      return projectSettings.useClaudeCodeSystemPrompt;
+    }
+
+    // Fall back to global settings
+    const globalSettings = await settingsService.getGlobalSettings();
+    const result = globalSettings.useClaudeCodeSystemPrompt ?? true;
+    logger.info(`${logPrefix} useClaudeCodeSystemPrompt from global settings: ${result}`);
+    return result;
+  } catch (error) {
+    logger.error(`${logPrefix} Failed to load useClaudeCodeSystemPrompt setting:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get the default max turns setting from global settings.
+ *
+ * Reads the user's configured `defaultMaxTurns` setting, which controls the maximum
+ * number of agent turns (tool-call round-trips) for feature execution.
+ *
+ * @param settingsService - Settings service instance (may be null)
+ * @param logPrefix - Logging prefix for debugging
+ * @returns The user's configured max turns, or {@link DEFAULT_MAX_TURNS} as default
+ */
+export async function getDefaultMaxTurnsSetting(
+  settingsService?: SettingsService | null,
+  logPrefix = '[SettingsHelper]'
+): Promise<number> {
+  if (!settingsService) {
+    logger.info(
+      `${logPrefix} SettingsService not available, using default maxTurns=${DEFAULT_MAX_TURNS}`
+    );
+    return DEFAULT_MAX_TURNS;
+  }
+
+  try {
+    const globalSettings = await settingsService.getGlobalSettings();
+    const raw = globalSettings.defaultMaxTurns;
+    const result = Number.isFinite(raw) ? (raw as number) : DEFAULT_MAX_TURNS;
+    // Clamp to valid range
+    const clamped = Math.max(1, Math.min(MAX_ALLOWED_TURNS, Math.floor(result)));
+    logger.debug(`${logPrefix} defaultMaxTurns from global settings: ${clamped}`);
+    return clamped;
+  } catch (error) {
+    logger.error(`${logPrefix} Failed to load defaultMaxTurns setting:`, error);
+    return DEFAULT_MAX_TURNS;
   }
 }
 
@@ -602,6 +687,145 @@ export interface ProviderByModelIdResult {
   credentials: Credentials | undefined;
   /** The resolved Claude model ID to use for API calls (from mapsToClaudeModel) */
   resolvedModel: string | undefined;
+}
+
+/** Result from resolveProviderContext */
+export interface ProviderContextResult {
+  /** The provider configuration */
+  provider: ClaudeCompatibleProvider | undefined;
+  /** Credentials for API key resolution */
+  credentials: Credentials | undefined;
+  /** The resolved Claude model ID for SDK configuration */
+  resolvedModel: string | undefined;
+  /** The original model config from the provider if found */
+  modelConfig: import('@automaker/types').ProviderModel | undefined;
+}
+
+/**
+ * Checks if a provider is enabled.
+ * Providers with enabled: undefined are treated as enabled (default state).
+ * Only explicitly set enabled: false means the provider is disabled.
+ */
+function isProviderEnabled(provider: ClaudeCompatibleProvider): boolean {
+  return provider.enabled !== false;
+}
+
+/**
+ * Finds a model config in a provider's models array by ID (case-insensitive).
+ */
+function findModelInProvider(
+  provider: ClaudeCompatibleProvider,
+  modelId: string
+): import('@automaker/types').ProviderModel | undefined {
+  return provider.models?.find(
+    (m) => m.id === modelId || m.id.toLowerCase() === modelId.toLowerCase()
+  );
+}
+
+/**
+ * Resolves the provider and Claude-compatible model configuration.
+ *
+ * This is the central logic for resolving provider context, supporting:
+ * 1. Explicit lookup by providerId (most reliable for persistence)
+ * 2. Fallback lookup by modelId across all enabled providers
+ * 3. Resolution of mapsToClaudeModel for SDK configuration
+ *
+ * @param settingsService - Settings service instance
+ * @param modelId - The model ID to resolve
+ * @param providerId - Optional explicit provider ID
+ * @param logPrefix - Prefix for log messages
+ * @returns Promise resolving to the provider context
+ */
+export async function resolveProviderContext(
+  settingsService: SettingsService,
+  modelId: string,
+  providerId?: string,
+  logPrefix = '[SettingsHelper]'
+): Promise<ProviderContextResult> {
+  try {
+    const globalSettings = await settingsService.getGlobalSettings();
+    const credentials = await settingsService.getCredentials();
+    const providers = globalSettings.claudeCompatibleProviders || [];
+
+    logger.debug(
+      `${logPrefix} Resolving provider context: modelId="${modelId}", providerId="${providerId ?? 'none'}", providers count=${providers.length}`
+    );
+
+    let provider: ClaudeCompatibleProvider | undefined;
+    let modelConfig: import('@automaker/types').ProviderModel | undefined;
+
+    // 1. Try resolving by explicit providerId first (most reliable)
+    if (providerId) {
+      provider = providers.find((p) => p.id === providerId);
+      if (provider) {
+        if (!isProviderEnabled(provider)) {
+          logger.warn(
+            `${logPrefix} Explicitly requested provider "${provider.name}" (${providerId}) is disabled (enabled=${provider.enabled})`
+          );
+        } else {
+          logger.debug(
+            `${logPrefix} Found provider "${provider.name}" (${providerId}), enabled=${provider.enabled ?? 'undefined (treated as enabled)'}`
+          );
+          // Find the model config within this provider to check for mappings
+          modelConfig = findModelInProvider(provider, modelId);
+          if (!modelConfig && provider.models && provider.models.length > 0) {
+            logger.debug(
+              `${logPrefix} Model "${modelId}" not found in provider "${provider.name}". Available models: ${provider.models.map((m) => m.id).join(', ')}`
+            );
+          }
+        }
+      } else {
+        logger.warn(
+          `${logPrefix} Explicitly requested provider "${providerId}" not found. Available providers: ${providers.map((p) => p.id).join(', ')}`
+        );
+      }
+    }
+
+    // 2. Fallback to model-based lookup across all providers if modelConfig not found
+    // Note: We still search even if provider was found, to get the modelConfig for mapping
+    if (!modelConfig) {
+      for (const p of providers) {
+        if (!isProviderEnabled(p) || p.id === providerId) continue; // Skip disabled or already checked
+
+        const config = findModelInProvider(p, modelId);
+
+        if (config) {
+          // Only override provider if we didn't find one by explicit ID
+          if (!provider) {
+            provider = p;
+          }
+          modelConfig = config;
+          logger.debug(`${logPrefix} Found model "${modelId}" in provider "${p.name}" (fallback)`);
+          break;
+        }
+      }
+    }
+
+    // 3. Resolve the mapped Claude model if specified
+    let resolvedModel: string | undefined;
+    if (modelConfig?.mapsToClaudeModel) {
+      const { resolveModelString } = await import('@automaker/model-resolver');
+      resolvedModel = resolveModelString(modelConfig.mapsToClaudeModel);
+      logger.debug(
+        `${logPrefix} Model "${modelId}" maps to Claude model "${modelConfig.mapsToClaudeModel}" -> "${resolvedModel}"`
+      );
+    }
+
+    // Log final result for debugging
+    logger.debug(
+      `${logPrefix} Provider context resolved: provider=${provider?.name ?? 'none'}, modelConfig=${modelConfig ? 'found' : 'not found'}, resolvedModel=${resolvedModel ?? modelId}`
+    );
+
+    return { provider, credentials, resolvedModel, modelConfig };
+  } catch (error) {
+    logger.error(`${logPrefix} Failed to resolve provider context:`, error);
+    return {
+      provider: undefined,
+      credentials: undefined,
+      resolvedModel: undefined,
+      modelConfig: undefined,
+    };
+  }
 }
 
 /**

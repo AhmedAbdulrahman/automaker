@@ -31,7 +31,7 @@ import type {
 } from './types.js';
 import { validateBareModelId } from '@automaker/types';
 import { validateApiKey } from '../lib/auth-utils.js';
-import { getEffectivePermissions } from '../services/cursor-config-service.js';
+import { getEffectivePermissions, detectProfile } from '../services/cursor-config-service.js';
 import {
   type CursorStreamEvent,
   type CursorSystemEvent,
@@ -69,6 +69,7 @@ interface CursorToolHandler<TArgs = unknown, TResult = unknown> {
  * Registry of Cursor tool handlers
  * Each handler knows how to normalize its specific tool call type
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- handler registry stores heterogeneous tool type parameters
 const CURSOR_TOOL_HANDLERS: Record<string, CursorToolHandler<any, any>> = {
   readToolCall: {
     name: 'Read',
@@ -449,6 +450,11 @@ export class CursorProvider extends CliProvider {
       cliArgs.push('--model', model);
     }
 
+    // Resume an existing chat when a provider session ID is available
+    if (options.sdkSessionId) {
+      cliArgs.push('--resume', options.sdkSessionId);
+    }
+
     // Use '-' to indicate reading prompt from stdin
     cliArgs.push('-');
 
@@ -556,10 +562,14 @@ export class CursorProvider extends CliProvider {
         const resultEvent = cursorEvent as CursorResultEvent;
 
         if (resultEvent.is_error) {
+          const errorText = resultEvent.error || resultEvent.result || '';
+          const enrichedError =
+            errorText ||
+            `Cursor agent failed (duration: ${resultEvent.duration_ms}ms, subtype: ${resultEvent.subtype}, session: ${resultEvent.session_id ?? 'none'})`;
           return {
             type: 'error',
             session_id: resultEvent.session_id,
-            error: resultEvent.error || resultEvent.result || 'Unknown error',
+            error: enrichedError,
           };
         }
 
@@ -833,9 +843,10 @@ export class CursorProvider extends CliProvider {
   async *executeQuery(options: ExecuteOptions): AsyncGenerator<ProviderMessage> {
     this.ensureCliDetected();
 
-    // Validate that model doesn't have a provider prefix
+    // Validate that model doesn't have a provider prefix (except cursor- which should already be stripped)
     // AgentService should strip prefixes before passing to providers
-    validateBareModelId(options.model, 'CursorProvider');
+    // Note: Cursor's Gemini models (e.g., "gemini-3-pro") legitimately start with "gemini-"
+    validateBareModelId(options.model, 'CursorProvider', 'cursor');
 
     if (!this.cliPath) {
       throw this.createError(
@@ -877,8 +888,12 @@ export class CursorProvider extends CliProvider {
 
     logger.debug(`CursorProvider.executeQuery called with model: "${options.model}"`);
 
-    // Get effective permissions for this project
+    // Get effective permissions for this project and detect the active profile
     const effectivePermissions = await getEffectivePermissions(options.cwd || process.cwd());
+    const activeProfile = detectProfile(effectivePermissions);
+    logger.debug(
+      `Active permission profile: ${activeProfile ?? 'none'}, permissions: ${JSON.stringify(effectivePermissions)}`
+    );
 
     // Debug: log raw events when AUTOMAKER_DEBUG_RAW_OUTPUT is enabled
     const debugRawEvents =

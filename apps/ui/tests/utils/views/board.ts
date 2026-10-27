@@ -1,4 +1,5 @@
 import { Page, Locator } from '@playwright/test';
+import { DEFAULT_ELEMENT_TIMEOUT_MS } from '../core/waiting';
 
 /**
  * Get a kanban card by feature ID
@@ -96,9 +97,16 @@ export async function getDragHandleForFeature(page: Page, featureId: string): Pr
  * Click the add feature button
  */
 export async function clickAddFeature(page: Page): Promise<void> {
-  await page.click('[data-testid="add-feature-button"]');
+  // There may be multiple add-feature buttons on the page (header, empty state).
+  // Use .first() to click the first visible one.
+  const addButton = page.locator('[data-testid="add-feature-button"]').first();
+  await addButton.waitFor({ state: 'visible', timeout: DEFAULT_ELEMENT_TIMEOUT_MS });
+  await addButton.click({ timeout: 5000 });
+
+  // Wait for dialog to be visible
   await page.waitForSelector('[data-testid="add-feature-dialog"]', {
-    timeout: 5000,
+    state: 'visible',
+    timeout: DEFAULT_ELEMENT_TIMEOUT_MS,
   });
 }
 
@@ -122,33 +130,32 @@ export async function fillAddFeatureDialog(
       .locator('[id="feature-other"]');
     await otherBranchRadio.waitFor({ state: 'visible', timeout: 5000 });
     await otherBranchRadio.click();
-    // Wait for the branch input to appear
-    await page.waitForTimeout(300);
 
-    // Now click on the branch input (autocomplete)
+    // Wait for the branch input to appear after radio click
     const branchInput = page.locator('[data-testid="feature-input"]');
     await branchInput.waitFor({ state: 'visible', timeout: 5000 });
     await branchInput.click();
-    // Wait for the popover to open
-    await page.waitForTimeout(300);
-    // Type in the command input
+    // Wait for the command list popover to open
     const commandInput = page.locator('[cmdk-input]');
+    await commandInput.waitFor({ state: 'visible', timeout: 5000 });
     await commandInput.fill(options.branch);
     // Press Enter to select/create the branch
     await commandInput.press('Enter');
     // Wait for popover to close
-    await page.waitForTimeout(200);
+    await commandInput.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
   }
 
   // Fill category if provided (it's also a combobox autocomplete)
   if (options?.category) {
     const categoryButton = page.locator('[data-testid="feature-category-input"]');
     await categoryButton.click();
-    await page.waitForTimeout(300);
+    // Wait for the command list popover to open
     const commandInput = page.locator('[cmdk-input]');
+    await commandInput.waitFor({ state: 'visible', timeout: 5000 });
     await commandInput.fill(options.category);
     await commandInput.press('Enter');
-    await page.waitForTimeout(200);
+    // Wait for popover to close
+    await commandInput.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
   }
 }
 
@@ -159,7 +166,7 @@ export async function confirmAddFeature(page: Page): Promise<void> {
   await page.click('[data-testid="confirm-add-feature"]');
   // Wait for dialog to close
   await page.waitForFunction(() => !document.querySelector('[data-testid="add-feature-dialog"]'), {
-    timeout: 5000,
+    timeout: DEFAULT_ELEMENT_TIMEOUT_MS,
   });
 }
 
@@ -195,7 +202,8 @@ export async function selectWorktreeBranch(page: Page, branchName: string): Prom
     name: new RegExp(branchName, 'i'),
   });
   await branchButton.click();
-  await page.waitForTimeout(500); // Wait for UI to update
+  // Wait for the button to become selected (aria-pressed="true")
+  await branchButton.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
 }
 
 /**

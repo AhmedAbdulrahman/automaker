@@ -1,3 +1,4 @@
+import { useCallback, startTransition } from 'react';
 import {
   Folder,
   ChevronDown,
@@ -11,9 +12,13 @@ import {
   RotateCcw,
   Trash2,
   Search,
+  LogOut,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatShortcut, type ThemeMode, useAppStore } from '@/store/app-store';
+import { initializeProject } from '@/lib/project-init';
+import { toast } from 'sonner';
+import type { Project } from '@/lib/electron';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +52,8 @@ interface ProjectSelectorWithOptionsProps {
   setIsProjectPickerOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   /** Callback to show the delete project confirmation dialog */
   setShowDeleteProjectDialog: (show: boolean) => void;
+  /** Callback to show the remove from automaker confirmation dialog */
+  setShowRemoveFromAutomakerDialog: (show: boolean) => void;
 }
 
 /**
@@ -70,19 +77,40 @@ export function ProjectSelectorWithOptions({
   isProjectPickerOpen,
   setIsProjectPickerOpen,
   setShowDeleteProjectDialog,
+  setShowRemoveFromAutomakerDialog,
 }: ProjectSelectorWithOptionsProps) {
-  const {
-    projects,
-    currentProject,
-    projectHistory,
-    setCurrentProject,
-    reorderProjects,
-    cyclePrevProject,
-    cycleNextProject,
-    clearProjectHistory,
-  } = useAppStore();
+  const projects = useAppStore((s) => s.projects);
+  const currentProject = useAppStore((s) => s.currentProject);
+  const projectHistory = useAppStore((s) => s.projectHistory);
+  const setCurrentProject = useAppStore((s) => s.setCurrentProject);
+  const reorderProjects = useAppStore((s) => s.reorderProjects);
+  const cyclePrevProject = useAppStore((s) => s.cyclePrevProject);
+  const cycleNextProject = useAppStore((s) => s.cycleNextProject);
+  const clearProjectHistory = useAppStore((s) => s.clearProjectHistory);
 
   const shortcuts = useKeyboardShortcutsConfig();
+  // Wrap setCurrentProject to initialize .automaker in background while switching
+  const setCurrentProjectWithInit = useCallback(
+    (p: Project) => {
+      if (p.id === currentProject?.id) {
+        return;
+      }
+      // Fire-and-forget: initialize .automaker directory structure in background
+      // so the project switch is not blocked by filesystem operations
+      initializeProject(p.path).catch((error) => {
+        console.error('Failed to initialize project during switch:', error);
+        toast.error('Failed to initialize project .automaker', {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      });
+      // Switch project immediately for instant UI response
+      startTransition(() => {
+        setCurrentProject(p);
+      });
+    },
+    [currentProject?.id, setCurrentProject]
+  );
+
   const {
     projectSearchQuery,
     setProjectSearchQuery,
@@ -95,13 +123,21 @@ export function ProjectSelectorWithOptions({
     currentProject,
     isProjectPickerOpen,
     setIsProjectPickerOpen,
-    setCurrentProject,
+    setCurrentProject: setCurrentProjectWithInit,
   });
 
   const { sensors, handleDragEnd } = useDragAndDrop({ projects, reorderProjects });
 
   const { globalTheme, setProjectTheme, setPreviewTheme, handlePreviewEnter, handlePreviewLeave } =
     useProjectTheme();
+
+  const handleSelectProject = useCallback(
+    (p: Project) => {
+      setCurrentProjectWithInit(p);
+      setIsProjectPickerOpen(false);
+    },
+    [setCurrentProjectWithInit, setIsProjectPickerOpen]
+  );
 
   if (!sidebarOpen || projects.length === 0) {
     return null;
@@ -200,10 +236,7 @@ export function ProjectSelectorWithOptions({
                       project={project}
                       currentProjectId={currentProject?.id}
                       isHighlighted={index === selectedProjectIndex}
-                      onSelect={(p) => {
-                        setCurrentProject(p);
-                        setIsProjectPickerOpen(false);
-                      }}
+                      onSelect={handleSelectProject}
                     />
                   ))}
                 </div>
@@ -371,8 +404,16 @@ export function ProjectSelectorWithOptions({
               </>
             )}
 
-            {/* Move to Trash Section */}
+            {/* Remove / Trash Section */}
             <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => setShowRemoveFromAutomakerDialog(true)}
+              className="text-muted-foreground focus:text-foreground"
+              data-testid="remove-from-automaker"
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              <span>Remove from Automaker</span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => setShowDeleteProjectDialog(true)}
               className="text-destructive focus:text-destructive focus:bg-destructive/10"

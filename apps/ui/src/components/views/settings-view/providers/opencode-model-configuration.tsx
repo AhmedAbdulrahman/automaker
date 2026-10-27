@@ -197,8 +197,43 @@ export function OpencodeModelConfiguration({
   onDynamicModelToggle,
   isLoadingDynamicModels = false,
 }: OpencodeModelConfigurationProps) {
+  // Determine the free tier models to display.
+  // When dynamic models are available from CLI, use the opencode provider models
+  // from the dynamic list (they reflect the actual currently-available models).
+  // Fall back to the hardcoded OPENCODE_MODELS only when CLI hasn't returned data.
+  const dynamicOpencodeFreeModels = useMemo(() => {
+    const opencodeModelsFromCli = dynamicModels.filter((m) => m.provider === 'opencode');
+    if (opencodeModelsFromCli.length === 0) return null;
+
+    // Convert dynamic ModelDefinition to OpencodeModelConfig for the static section
+    return opencodeModelsFromCli.map(
+      (m): OpencodeModelConfig => ({
+        id: m.id.replace('opencode/', 'opencode-') as OpencodeModelId,
+        label: m.name.replace(/\s*\(Free\)\s*$/, '').replace(/\s*\(OpenCode\)\s*$/, ''),
+        description: m.description,
+        supportsVision: m.supportsVision ?? false,
+        provider: 'opencode' as OpencodeProvider,
+        tier: 'free',
+      })
+    );
+  }, [dynamicModels]);
+
+  // Use dynamically discovered free tier models when available, otherwise hardcoded fallback
+  const effectiveStaticModels = dynamicOpencodeFreeModels ?? OPENCODE_MODELS;
+
+  // Build an effective config map that includes dynamic models (for default model dropdown lookup)
+  const effectiveModelConfigMap = useMemo(() => {
+    const map = { ...OPENCODE_MODEL_CONFIG_MAP };
+    if (dynamicOpencodeFreeModels) {
+      for (const model of dynamicOpencodeFreeModels) {
+        map[model.id] = model;
+      }
+    }
+    return map;
+  }, [dynamicOpencodeFreeModels]);
+
   // Group static models by provider for organized display
-  const modelsByProvider = OPENCODE_MODELS.reduce(
+  const modelsByProvider = effectiveStaticModels.reduce(
     (acc, model) => {
       if (!acc[model.provider]) {
         acc[model.provider] = [];
@@ -217,7 +252,7 @@ export function OpencodeModelConfiguration({
   const [dynamicProviderSearch, setDynamicProviderSearch] = useState('');
   const normalizedDynamicSearch = dynamicProviderSearch.trim().toLowerCase();
   const hasDynamicSearch = normalizedDynamicSearch.length > 0;
-  const allStaticModelIds = OPENCODE_MODELS.map((model) => model.id);
+  const allStaticModelIds = effectiveStaticModels.map((model) => model.id);
   const selectableStaticModelIds = allStaticModelIds.filter(
     (modelId) => modelId !== opencodeDefaultModel
   );
@@ -227,20 +262,23 @@ export function OpencodeModelConfiguration({
   const providerOrder: OpencodeProvider[] = ['opencode'];
 
   // Dynamic provider order (prioritize commonly used ones)
-  const dynamicProviderOrder = [
-    'github-copilot',
-    'google',
-    'openai',
-    'openrouter',
-    'anthropic',
-    'xai',
-    'deepseek',
-    'ollama',
-    'lmstudio',
-    'azure',
-    'amazon-bedrock',
-    'opencode', // Skip opencode in dynamic since it's in static
-  ];
+  const dynamicProviderOrder = useMemo(
+    () => [
+      'github-copilot',
+      'google',
+      'openai',
+      'openrouter',
+      'anthropic',
+      'xai',
+      'deepseek',
+      'ollama',
+      'lmstudio',
+      'azure',
+      'amazon-bedrock',
+      'opencode', // Skip opencode in dynamic since it's in static
+    ],
+    []
+  );
 
   const sortedDynamicProviders = useMemo(() => {
     const providerIndex = (providerId: string) => dynamicProviderOrder.indexOf(providerId);
@@ -259,7 +297,7 @@ export function OpencodeModelConfiguration({
       if (bIndex !== -1) return 1;
       return a.localeCompare(b);
     });
-  }, [dynamicModelsByProvider, providers]);
+  }, [dynamicModelsByProvider, providers, dynamicProviderOrder]);
 
   useEffect(() => {
     if (
@@ -378,7 +416,7 @@ export function OpencodeModelConfiguration({
             </SelectTrigger>
             <SelectContent>
               {enabledOpencodeModels.map((modelId) => {
-                const model = OPENCODE_MODEL_CONFIG_MAP[modelId];
+                const model = effectiveModelConfigMap[modelId];
                 if (!model) return null;
                 const ModelIconComponent = getModelIcon(modelId);
                 return (

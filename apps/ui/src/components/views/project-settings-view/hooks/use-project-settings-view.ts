@@ -5,8 +5,11 @@ export type ProjectSettingsViewId =
   | 'theme'
   | 'worktrees'
   | 'commands'
+  | 'scripts'
+  | 'commands-scripts'
   | 'claude'
   | 'data'
+  | 'orphaned'
   | 'danger';
 
 interface UseProjectSettingsViewOptions {

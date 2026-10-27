@@ -2,7 +2,7 @@
 import { memo, useCallback, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { AlertCircle, Lock, Hand, Sparkles, FileText } from 'lucide-react';
+import { AlertCircle, Lock, Hand, Sparkles, FileText, FileCheck } from 'lucide-react';
 import type { Feature } from '@/store/app-store';
 import { RowActions, type RowActionHandlers } from './row-actions';
 import { getColumnWidth, getColumnAlign } from './list-header';
@@ -120,7 +120,17 @@ const IndicatorBadges = memo(function IndicatorBadges({
     });
   }
 
-  if (hasPlan) {
+  if (feature.planSpec?.status === 'generated') {
+    badges.push({
+      key: 'plan-approval',
+      icon: FileCheck,
+      tooltip: 'Plan ready for review - tap to approve',
+      colorClass: 'text-purple-500',
+      bgClass: 'bg-purple-500/15',
+      borderClass: 'border-purple-500/30',
+      animate: true,
+    });
+  } else if (hasPlan) {
     badges.push({
       key: 'plan',
       icon: FileText,
@@ -209,6 +219,23 @@ export const ListRow = memo(function ListRow({
   blockingDependencies = [],
   className,
 }: ListRowProps) {
+  // A row should display as "actively running" if it's in the runningAutoTasks list
+  // AND in an execution-compatible status. However, there's a race window where a feature
+  // is tracked as running but its status hasn't caught up yet (still 'backlog', 'ready',
+  // or 'interrupted'). We handle this with isRunningWithStaleStatus.
+  const isInExecutionState =
+    feature.status === 'in_progress' ||
+    (typeof feature.status === 'string' && feature.status.startsWith('pipeline_'));
+  const isActivelyRunning = isCurrentAutoTask && isInExecutionState;
+  // Feature is tracked as running but status hasn't updated yet - show running UI
+  const isRunningWithStaleStatus =
+    isCurrentAutoTask &&
+    !isInExecutionState &&
+    (feature.status === 'backlog' ||
+      feature.status === 'ready' ||
+      feature.status === 'interrupted');
+  const showRunningVisuals = isActivelyRunning || isRunningWithStaleStatus;
+
   const handleRowClick = useCallback(
     (e: React.MouseEvent) => {
       // Don't trigger row click if clicking on checkbox or actions
@@ -258,7 +285,7 @@ export const ListRow = memo(function ListRow({
     >
       {/* Checkbox column */}
       {showCheckbox && (
-        <div role="cell" className="flex items-center justify-center w-10 px-2 py-3 shrink-0">
+        <div role="cell" className="flex items-center justify-center w-10 px-2 py-2 shrink-0">
           <input
             type="checkbox"
             checked={isSelected}
@@ -277,7 +304,7 @@ export const ListRow = memo(function ListRow({
       <div
         role="cell"
         className={cn(
-          'flex items-center pl-3 pr-0 py-3 gap-0',
+          'flex items-center pl-3 pr-0 py-2 gap-0',
           getColumnWidth('title'),
           getColumnAlign('title')
         )}
@@ -286,8 +313,8 @@ export const ListRow = memo(function ListRow({
           <div className="flex items-center">
             <span
               className={cn(
-                'font-medium truncate',
-                feature.titleGenerating && 'animate-pulse text-muted-foreground'
+                'text-sm font-medium truncate',
+                feature.titleGenerating && !feature.title && 'animate-pulse text-muted-foreground'
               )}
               title={feature.title || feature.description}
             >
@@ -315,7 +342,7 @@ export const ListRow = memo(function ListRow({
       <div
         role="cell"
         className={cn(
-          'flex items-center pl-0 pr-3 py-3 shrink-0',
+          'flex items-center pl-0 pr-3 py-2 shrink-0',
           getColumnWidth('priority'),
           getColumnAlign('priority')
         )}
@@ -348,14 +375,19 @@ export const ListRow = memo(function ListRow({
       </div>
 
       {/* Actions column */}
-      <div role="cell" className="flex items-center justify-end px-3 py-3 w-[80px] shrink-0">
-        <RowActions feature={feature} handlers={handlers} isCurrentAutoTask={isCurrentAutoTask} />
+      <div role="cell" className="flex items-center justify-end px-3 py-2 w-[80px] shrink-0">
+        <RowActions
+          feature={feature}
+          handlers={handlers}
+          isCurrentAutoTask={isActivelyRunning}
+          isRunningTask={!!isCurrentAutoTask}
+        />
       </div>
     </div>
   );
 
-  // Wrap with animated border for currently running auto task
-  if (isCurrentAutoTask) {
+  // Wrap with animated border for currently running auto task (including stale status)
+  if (showRunningVisuals) {
     return <div className="animated-border-wrapper-row">{rowContent}</div>;
   }
 
@@ -378,8 +410,13 @@ export function getFeatureSortValue(
       return (feature.category || '').toLowerCase();
     case 'priority':
       return feature.priority || 999; // No priority sorts last
-    case 'createdAt':
-      return feature.createdAt ? new Date(feature.createdAt) : new Date(0);
+    case 'createdAt': {
+      if (feature.createdAt) return new Date(feature.createdAt);
+      // Fallback: extract timestamp from feature ID (e.g., "feature-1772299989679-185nwyp5kc7")
+      const match = feature.id.match(/^feature-(\d+)-/);
+      if (match) return new Date(parseInt(match[1], 10));
+      return new Date(0);
+    }
     case 'updatedAt':
       return feature.updatedAt ? new Date(feature.updatedAt) : new Date(0);
     default:

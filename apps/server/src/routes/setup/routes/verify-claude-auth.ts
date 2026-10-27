@@ -6,6 +6,7 @@
 import type { Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '@automaker/utils';
+import { getClaudeAuthIndicators } from '@automaker/platform';
 import { getApiKey } from '../common.js';
 import {
   createSecureAuthEnv,
@@ -79,6 +80,12 @@ function containsAuthError(text: string): boolean {
 export function createVerifyClaudeAuthHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     try {
+      // In E2E/CI mock mode, skip real API calls
+      if (process.env.AUTOMAKER_MOCK_AGENT === 'true') {
+        res.json({ success: true, authenticated: true });
+        return;
+      }
+
       // Get the auth method and optional API key from the request body
       const { authMethod, apiKey } = req.body as {
         authMethod?: 'cli' | 'api_key';
@@ -109,6 +116,7 @@ export function createVerifyClaudeAuthHandler() {
       let authenticated = false;
       let errorMessage = '';
       let receivedAnyContent = false;
+      let cleanupEnv: (() => void) | undefined;
 
       // Create secure auth session
       const sessionId = `claude-auth-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -150,13 +158,13 @@ export function createVerifyClaudeAuthHandler() {
         AuthSessionManager.createSession(sessionId, authMethod || 'api_key', apiKey, 'anthropic');
 
         // Create temporary environment override for SDK call
-        const cleanupEnv = createTempEnvOverride(authEnv);
+        cleanupEnv = createTempEnvOverride(authEnv);
 
         // Run a minimal query to verify authentication
         const stream = query({
           prompt: "Reply with only the word 'ok'",
           options: {
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             maxTurns: 1,
             allowedTools: [],
             abortController,
@@ -193,8 +201,10 @@ export function createVerifyClaudeAuthHandler() {
           }
 
           // Check specifically for assistant messages with text content
-          if (msg.type === 'assistant' && (msg as any).message?.content) {
-            const content = (msg as any).message.content;
+          const msgRecord = msg as Record<string, unknown>;
+          const msgMessage = msgRecord.message as Record<string, unknown> | undefined;
+          if (msg.type === 'assistant' && msgMessage?.content) {
+            const content = msgMessage.content;
             if (Array.isArray(content)) {
               for (const block of content) {
                 if (block.type === 'text' && block.text) {
@@ -310,6 +320,8 @@ export function createVerifyClaudeAuthHandler() {
         }
       } finally {
         clearTimeout(timeoutId);
+        // Restore process.env to its original state
+        cleanupEnv?.();
         // Clean up the auth session
         AuthSessionManager.destroySession(sessionId);
       }
@@ -320,9 +332,28 @@ export function createVerifyClaudeAuthHandler() {
         authMethod,
       });
 
+      // Determine specific auth type for success messages
+      const effectiveAuthMethod = authMethod ?? 'api_key';
+      let authType: 'oauth' | 'api_key' | 'cli' | undefined;
+      if (authenticated) {
+        if (effectiveAuthMethod === 'api_key') {
+          authType = 'api_key';
+        } else if (effectiveAuthMethod === 'cli') {
+          // Check if CLI auth is via OAuth (Claude Code subscription) or generic CLI
+          try {
+            const indicators = await getClaudeAuthIndicators();
+            authType = indicators.credentials?.hasOAuthToken ? 'oauth' : 'cli';
+          } catch {
+            // Fall back to generic CLI if credential check fails
+            authType = 'cli';
+          }
+        }
+      }
+
       res.json({
         success: true,
         authenticated,
+        authType,
         error: errorMessage || undefined,
       });
     } catch (error) {

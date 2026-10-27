@@ -32,7 +32,7 @@ function getCursorClass(
 ): string {
   if (isSelectionMode) return 'cursor-pointer';
   if (isOverlay) return 'cursor-grabbing';
-  if (isDraggable) return 'cursor-grab active:cursor-grabbing';
+  // Drag cursor is now only on the drag handle, not the full card
   return 'cursor-default';
 }
 
@@ -52,6 +52,9 @@ interface KanbanCardProps {
   onViewPlan?: () => void;
   onApprovePlan?: () => void;
   onSpawnTask?: () => void;
+  onDuplicate?: () => void;
+  onDuplicateAsChild?: () => void;
+  onDuplicateAsChildMultiple?: () => void;
   hasContext?: boolean;
   isCurrentAutoTask?: boolean;
   shortcutKey?: string;
@@ -86,6 +89,9 @@ export const KanbanCard = memo(function KanbanCard({
   onViewPlan,
   onApprovePlan,
   onSpawnTask,
+  onDuplicate,
+  onDuplicateAsChild,
+  onDuplicateAsChildMultiple,
   hasContext,
   isCurrentAutoTask,
   shortcutKey,
@@ -108,6 +114,28 @@ export const KanbanCard = memo(function KanbanCard({
       currentProject: state.currentProject,
     }))
   );
+  // A card should display as "actively running" if it's in the runningAutoTasks list
+  // AND in an execution-compatible status. However, there's a race window where a feature
+  // is tracked as running (in runningAutoTasks) but its disk/UI status hasn't caught up yet
+  // (still 'backlog', 'ready', or 'interrupted'). In this case, we still want to show
+  // running controls (Logs/Stop) and animated border, but not the full "actively running"
+  // state that gates all UI behavior.
+  const isInExecutionState =
+    feature.status === 'in_progress' ||
+    (typeof feature.status === 'string' && feature.status.startsWith('pipeline_'));
+  const isActivelyRunning = !!isCurrentAutoTask && isInExecutionState;
+  // isRunningWithStaleStatus: feature is tracked as running but status hasn't updated yet.
+  // This happens during the timing gap between when the server starts a feature and when
+  // the UI receives the status update. Show running UI to prevent "Make" button flash.
+  const isRunningWithStaleStatus =
+    !!isCurrentAutoTask &&
+    !isInExecutionState &&
+    (feature.status === 'backlog' ||
+      feature.status === 'merge_conflict' ||
+      feature.status === 'ready' ||
+      feature.status === 'interrupted');
+  // Show running visual treatment for both fully confirmed and stale-status running tasks
+  const showRunningVisuals = isActivelyRunning || isRunningWithStaleStatus;
   const [isLifted, setIsLifted] = useState(false);
 
   useLayoutEffect(() => {
@@ -120,7 +148,11 @@ export const KanbanCard = memo(function KanbanCard({
 
   const isDraggable =
     !isSelectionMode &&
+    !isRunningWithStaleStatus &&
     (feature.status === 'backlog' ||
+      feature.status === 'merge_conflict' ||
+      feature.status === 'interrupted' ||
+      feature.status === 'ready' ||
       feature.status === 'waiting_approval' ||
       feature.status === 'verified' ||
       feature.status.startsWith('pipeline_') ||
@@ -164,10 +196,13 @@ export const KanbanCard = memo(function KanbanCard({
   const cardStyle = getCardBorderStyle(cardBorderEnabled, cardBorderOpacity);
 
   // Only allow selection for features matching the selection target
-  const isSelectable = isSelectionMode && feature.status === selectionTarget;
+  const isSelectable =
+    isSelectionMode &&
+    (feature.status === selectionTarget ||
+      (selectionTarget === 'backlog' && feature.status === 'merge_conflict'));
 
   const wrapperClasses = cn(
-    'relative select-none outline-none touch-none transition-transform duration-200 ease-out',
+    'relative select-none outline-none transition-transform duration-200 ease-out',
     getCursorClass(isOverlay, isDraggable, isSelectable),
     isOverlay && isLifted && 'scale-105 rotate-1 z-50',
     // Visual feedback when another card is being dragged over this one
@@ -181,13 +216,13 @@ export const KanbanCard = memo(function KanbanCard({
     'kanban-card-content h-full relative',
     reduceEffects ? 'shadow-none' : 'shadow-sm',
     'transition-all duration-200 ease-out',
-    // Disable hover translate for in-progress cards to prevent gap showing gradient
+    // Disable hover translate for running cards to prevent gap showing gradient
     isInteractive &&
       !reduceEffects &&
-      !isCurrentAutoTask &&
+      !showRunningVisuals &&
       'hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 bg-transparent',
     !glassmorphism && 'backdrop-blur-[0px]!',
-    !isCurrentAutoTask &&
+    !showRunningVisuals &&
       cardBorderEnabled &&
       (cardBorderOpacity === 100 ? 'border-border/50' : 'border'),
     hasError && 'border-[var(--status-error)] border-2 shadow-[var(--status-error-bg)] shadow-lg',
@@ -204,7 +239,7 @@ export const KanbanCard = memo(function KanbanCard({
 
   const renderCardContent = () => (
     <Card
-      style={isCurrentAutoTask ? undefined : cardStyle}
+      style={showRunningVisuals ? undefined : cardStyle}
       className={innerCardClasses}
       onDoubleClick={isSelectionMode ? undefined : onEdit}
       onClick={handleCardClick}
@@ -243,12 +278,18 @@ export const KanbanCard = memo(function KanbanCard({
       <CardHeaderSection
         feature={feature}
         isDraggable={isDraggable}
-        isCurrentAutoTask={!!isCurrentAutoTask}
+        isCurrentAutoTask={isActivelyRunning}
         isSelectionMode={isSelectionMode}
+        hasContext={hasContext}
         onEdit={onEdit}
         onDelete={onDelete}
         onViewOutput={onViewOutput}
         onSpawnTask={onSpawnTask}
+        onDuplicate={onDuplicate}
+        onDuplicateAsChild={onDuplicateAsChild}
+        onDuplicateAsChildMultiple={onDuplicateAsChildMultiple}
+        dragHandleListeners={isDraggable ? listeners : undefined}
+        dragHandleAttributes={isDraggable ? attributes : undefined}
       />
 
       <CardContent className="px-3 pt-0 pb-0">
@@ -261,13 +302,14 @@ export const KanbanCard = memo(function KanbanCard({
           projectPath={currentProject?.path ?? ''}
           contextContent={contextContent}
           summary={summary}
-          isCurrentAutoTask={isCurrentAutoTask}
+          isActivelyRunning={isActivelyRunning}
         />
 
         {/* Actions */}
         <CardActions
           feature={feature}
-          isCurrentAutoTask={!!isCurrentAutoTask}
+          isCurrentAutoTask={isActivelyRunning}
+          isRunningTask={!!isCurrentAutoTask}
           hasContext={hasContext}
           shortcutKey={shortcutKey}
           isSelectionMode={isSelectionMode}
@@ -291,12 +333,10 @@ export const KanbanCard = memo(function KanbanCard({
     <div
       ref={setNodeRef}
       style={dndStyle}
-      {...attributes}
-      {...(isDraggable ? listeners : {})}
       className={wrapperClasses}
       data-testid={`kanban-card-${feature.id}`}
     >
-      {isCurrentAutoTask ? (
+      {showRunningVisuals ? (
         <div className="animated-border-wrapper">{renderCardContent()}</div>
       ) : (
         renderCardContent()

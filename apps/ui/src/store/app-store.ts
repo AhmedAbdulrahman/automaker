@@ -6,8 +6,8 @@ import { getHttpApiClient } from '@/lib/http-api-client';
 import { createLogger } from '@automaker/utils/logger';
 // Note: setItem/getItem moved to ./utils/theme-utils.ts
 import { UI_SANS_FONT_OPTIONS, UI_MONO_FONT_OPTIONS } from '@/config/ui-font-options';
+import { loadFont } from '@/styles/font-imports';
 import type {
-  Feature as BaseFeature,
   FeatureImagePath,
   FeatureTextFilePath,
   ModelAlias,
@@ -15,27 +15,14 @@ import type {
   ThinkingLevel,
   ReasoningEffort,
   ModelProvider,
-  CursorModelId,
-  CodexModelId,
-  OpencodeModelId,
-  GeminiModelId,
-  CopilotModelId,
-  PhaseModelConfig,
   PhaseModelKey,
   PhaseModelEntry,
-  MCPServerConfig,
-  FeatureStatusWithPipeline,
-  PipelineConfig,
   PipelineStep,
-  PromptCustomization,
   ModelDefinition,
   ServerLogLevel,
-  EventHook,
-  ClaudeApiProfile,
-  ClaudeCompatibleProvider,
-  SidebarStyle,
   ParsedTask,
   PlanSpec,
+  FeatureTemplate,
 } from '@automaker/types';
 import {
   getAllCursorModelIds,
@@ -49,6 +36,7 @@ import {
   DEFAULT_COPILOT_MODEL,
   DEFAULT_MAX_CONCURRENCY,
   DEFAULT_GLOBAL_SETTINGS,
+  getThinkingLevelsForModel,
 } from '@automaker/types';
 
 // Import types from modular type files
@@ -94,6 +82,14 @@ import {
   type CodexRateLimitWindow,
   type CodexUsage,
   type CodexUsageResponse,
+  type ZaiPlanType,
+  type ZaiQuotaLimit,
+  type ZaiUsage,
+  type ZaiUsageResponse,
+  type GeminiQuotaBucket,
+  type GeminiTierQuota,
+  type GeminiUsage,
+  type GeminiUsageResponse,
 } from './types';
 
 // Import utility functions from modular utils files
@@ -173,6 +169,14 @@ export type {
   CodexRateLimitWindow,
   CodexUsage,
   CodexUsageResponse,
+  ZaiPlanType,
+  ZaiQuotaLimit,
+  ZaiUsage,
+  ZaiUsageResponse,
+  GeminiQuotaBucket,
+  GeminiTierQuota,
+  GeminiUsage,
+  GeminiUsageResponse,
 };
 
 // Re-export values from ./types for backward compatibility
@@ -202,7 +206,7 @@ export { defaultBackgroundSettings, defaultTerminalState, MAX_INIT_OUTPUT_LINES 
 // - Terminal types (./types/terminal-types.ts)
 // - ClaudeModel, Feature, FileTreeNode, ProjectAnalysis (./types/project-types.ts)
 // - InitScriptState, AutoModeActivity, AppState, AppActions (./types/state-types.ts)
-// - Claude/Codex usage types (./types/usage-types.ts)
+// - Claude/Codex/Zai/Gemini usage types (./types/usage-types.ts)
 // The following utility functions have been moved to ./utils/:
 // - Theme utilities: THEME_STORAGE_KEY, getStoredTheme, getStoredFontSans, getStoredFontMono, etc. (./utils/theme-utils.ts)
 // - Shortcut utilities: parseShortcut, formatShortcut, DEFAULT_KEYBOARD_SHORTCUTS (./utils/shortcut-utils.ts)
@@ -212,6 +216,55 @@ export { defaultBackgroundSettings, defaultTerminalState, MAX_INIT_OUTPUT_LINES 
 // - defaultBackgroundSettings (./defaults/background-settings.ts)
 // - defaultTerminalState (./defaults/terminal-defaults.ts)
 
+// Type definitions are imported from ./types/state-types.ts
+// AppActions interface is defined in ./types/state-types.ts
+
+/**
+ * Pre-populate sidebar/UI state from the UI cache at module load time.
+ * This runs synchronously before createRoot().render(), so the very first
+ * React render uses the correct sidebar width — eliminating the layout shift
+ * (wide sidebar → collapsed) that was visible when auth was pre-populated
+ * but sidebar state wasn't.
+ */
+function getInitialUIState(): {
+  sidebarOpen: boolean;
+  sidebarStyle: 'unified' | 'discord';
+  collapsedNavSections: Record<string, boolean>;
+} {
+  try {
+    const raw = localStorage.getItem('automaker-ui-cache');
+    if (raw) {
+      const wrapper = JSON.parse(raw);
+      // zustand/persist wraps state under a "state" key
+      const cache = wrapper?.state;
+      if (cache) {
+        return {
+          sidebarOpen:
+            typeof cache.cachedSidebarOpen === 'boolean' ? cache.cachedSidebarOpen : true,
+          sidebarStyle: cache.cachedSidebarStyle === 'discord' ? 'discord' : 'unified',
+          collapsedNavSections: (() => {
+            const raw = cache.cachedCollapsedNavSections;
+            if (
+              raw &&
+              typeof raw === 'object' &&
+              !Array.isArray(raw) &&
+              Object.getOwnPropertyNames(raw).every((k) => typeof raw[k] === 'boolean')
+            ) {
+              return raw as Record<string, boolean>;
+            }
+            return {};
+          })(),
+        };
+      }
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return { sidebarOpen: true, sidebarStyle: 'unified', collapsedNavSections: {} };
+}
+
+const cachedUI = getInitialUIState();
+
 const initialState: AppState = {
   projects: [],
   currentProject: null,
@@ -219,11 +272,12 @@ const initialState: AppState = {
   projectHistory: [],
   projectHistoryIndex: -1,
   currentView: 'welcome',
-  sidebarOpen: true,
-  sidebarStyle: 'unified',
-  collapsedNavSections: {},
+  sidebarOpen: cachedUI.sidebarOpen,
+  sidebarStyle: cachedUI.sidebarStyle,
+  collapsedNavSections: cachedUI.collapsedNavSections,
   mobileSidebarHidden: false,
   lastSelectedSessionByProject: {},
+  agentModelBySession: {},
   theme: getStoredTheme() || 'dark',
   fontFamilySans: getStoredFontSans(),
   fontFamilyMono: getStoredFontMono(),
@@ -234,18 +288,21 @@ const initialState: AppState = {
     anthropic: '',
     google: '',
     openai: '',
+    zai: '',
   },
   chatSessions: [],
   currentChatSession: null,
   chatHistoryOpen: false,
   autoModeByWorktree: {},
   autoModeActivityLog: [],
+  recentlyCompletedFeatures: new Set<string>(),
   maxConcurrency: DEFAULT_MAX_CONCURRENCY,
   boardViewMode: 'kanban',
   defaultSkipTests: true,
   enableDependencyBlocking: true,
   skipVerificationInAutoMode: false,
   enableAiCommitMessages: true,
+  mergePostAction: null,
   planUseSelectedWorktreeBranch: true,
   addFeatureUseSelectedWorktreeBranch: false,
   useWorktrees: true,
@@ -254,6 +311,7 @@ const initialState: AppState = {
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   muteDoneSound: false,
   disableSplashScreen: false,
+  defaultSortNewestCardOnTop: false,
   serverLogLevel: 'info',
   enableRequestLogging: true,
   showQueryDevtools: true,
@@ -270,10 +328,13 @@ const initialState: AppState = {
   codexApprovalPolicy: 'on-request',
   codexEnableWebSearch: false,
   codexEnableImages: false,
+  codexAdditionalDirs: [],
+  codexThreadId: undefined,
   enabledOpencodeModels: getAllOpencodeModelIds(),
   opencodeDefaultModel: DEFAULT_OPENCODE_MODEL,
   dynamicOpencodeModels: [],
   enabledDynamicModelIds: [],
+  knownDynamicModelIds: [],
   cachedOpencodeProviders: [],
   opencodeModelsLoading: false,
   opencodeModelsError: null,
@@ -285,9 +346,14 @@ const initialState: AppState = {
   copilotDefaultModel: DEFAULT_COPILOT_MODEL,
   disabledProviders: [],
   autoLoadClaudeMd: false,
+  useClaudeCodeSystemPrompt: true,
   skipSandboxWarning: false,
   mcpServers: [],
   defaultEditorCommand: null,
+  editorFontSize: 13,
+  editorFontFamily: 'default',
+  editorAutoSave: false,
+  editorAutoSaveDelay: 1000,
   defaultTerminalId: null,
   enableSkills: true,
   skillsSources: ['user', 'project'] as Array<'user' | 'project'>,
@@ -295,6 +361,8 @@ const initialState: AppState = {
   subagentsSources: ['user', 'project'] as Array<'user' | 'project'>,
   promptCustomization: {},
   eventHooks: [],
+  ntfyEndpoints: [],
+  featureTemplates: DEFAULT_GLOBAL_SETTINGS.featureTemplates ?? [],
   claudeCompatibleProviders: [],
   claudeApiProfiles: [],
   activeClaudeApiProfileId: null,
@@ -308,12 +376,19 @@ const initialState: AppState = {
   defaultPlanningMode: 'skip' as PlanningMode,
   defaultRequirePlanApproval: false,
   defaultFeatureModel: DEFAULT_GLOBAL_SETTINGS.defaultFeatureModel,
+  defaultThinkingLevel: DEFAULT_GLOBAL_SETTINGS.defaultThinkingLevel ?? 'adaptive',
+  defaultReasoningEffort: DEFAULT_GLOBAL_SETTINGS.defaultReasoningEffort ?? 'none',
+  defaultMaxTurns: DEFAULT_GLOBAL_SETTINGS.defaultMaxTurns ?? 10000,
   pendingPlanApproval: null,
   claudeRefreshInterval: 60,
   claudeUsage: null,
   claudeUsageLastUpdated: null,
   codexUsage: null,
   codexUsageLastUpdated: null,
+  zaiUsage: null,
+  zaiUsageLastUpdated: null,
+  geminiUsage: null,
+  geminiUsageLastUpdated: null,
   codexModels: [],
   codexModelsLoading: false,
   codexModelsError: null,
@@ -325,6 +400,11 @@ const initialState: AppState = {
   defaultDeleteBranchByProject: {},
   autoDismissInitScriptIndicatorByProject: {},
   useWorktreesByProject: {},
+  worktreeCopyFilesByProject: {},
+  pinnedWorktreesCountByProject: {},
+  pinnedWorktreeBranchesByProject: {},
+  worktreeDropdownThresholdByProject: {},
+  alwaysUseWorktreeDropdownByProject: {},
   worktreePanelCollapsed: false,
   lastProjectDir: '',
   recentFolders: [],
@@ -349,10 +429,15 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }
   },
 
-  removeProject: (projectId) =>
+  removeProject: (projectId: string) => {
     set((state) => ({
       projects: state.projects.filter((p) => p.id !== projectId),
-    })),
+      currentProject: state.currentProject?.id === projectId ? null : state.currentProject,
+    }));
+
+    // Persist to storage
+    saveProjects(get().projects);
+  },
 
   moveProjectToTrash: (projectId: string) => {
     const project = get().projects.find((p) => p.id === projectId);
@@ -654,12 +739,14 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   },
   setPreviewTheme: (theme) => set({ previewTheme: theme }),
 
-  // Font actions
+  // Font actions - triggers lazy font loading for on-demand fonts
   setFontSans: (fontFamily) => {
+    if (fontFamily) loadFont(fontFamily);
     set({ fontFamilySans: fontFamily });
     saveFontSansToStorage(fontFamily);
   },
   setFontMono: (fontFamily) => {
+    if (fontFamily) loadFont(fontFamily);
     set({ fontFamilyMono: fontFamily });
     saveFontMonoToStorage(fontFamily);
   },
@@ -804,6 +891,13 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set((state) => ({
       features: state.features.map((f) => (f.id === id ? { ...f, ...updates } : f)),
     })),
+  batchUpdateFeatures: (ids, updates) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    set((state) => ({
+      features: state.features.map((f) => (idSet.has(f.id) ? { ...f, ...updates } : f)),
+    }));
+  },
   addFeature: (feature) => {
     const id = feature.id ?? `feature-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const newFeature = { ...feature, id } as Feature;
@@ -881,11 +975,15 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       ),
     })),
   deleteChatSession: (sessionId) =>
-    set((state) => ({
-      chatSessions: state.chatSessions.filter((s) => s.id !== sessionId),
-      currentChatSession:
-        state.currentChatSession?.id === sessionId ? null : state.currentChatSession,
-    })),
+    set((state) => {
+      const { [sessionId]: _removed, ...remainingAgentModels } = state.agentModelBySession;
+      return {
+        chatSessions: state.chatSessions.filter((s) => s.id !== sessionId),
+        currentChatSession:
+          state.currentChatSession?.id === sessionId ? null : state.currentChatSession,
+        agentModelBySession: remainingAgentModels,
+      };
+    }),
   setChatHistoryOpen: (open) => set({ chatHistoryOpen: open }),
   toggleChatHistory: () => set((state) => ({ chatHistoryOpen: !state.chatHistoryOpen })),
 
@@ -918,10 +1016,17 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     const key = get().getWorktreeKey(projectId, branchName);
     set((state) => {
       const current = state.autoModeByWorktree[key] || {
-        isRunning: true,
+        isRunning: false,
         runningTasks: [],
         branchName,
       };
+      // Prevent duplicate entries - the same feature can trigger multiple
+      // auto_mode_feature_start events (e.g., from execution-service and
+      // pipeline-orchestrator), so we must guard against adding the same
+      // taskId more than once.
+      if (current.runningTasks.includes(taskId)) {
+        return state;
+      }
       return {
         autoModeByWorktree: {
           ...state.autoModeByWorktree,
@@ -939,6 +1044,9 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set((state) => {
       const current = state.autoModeByWorktree[key];
       if (!current) return state;
+      // Idempotent: skip if task is not in the list to avoid creating new
+      // object references that trigger unnecessary re-renders.
+      if (!current.runningTasks.includes(taskId)) return state;
       return {
         autoModeByWorktree: {
           ...state.autoModeByWorktree,
@@ -990,6 +1098,23 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   clearAutoModeActivity: () => set({ autoModeActivityLog: [] }),
 
+  addRecentlyCompletedFeature: (featureId: string) => {
+    set((state) => {
+      // Idempotent: skip if already tracked to avoid creating a new Set reference
+      // that triggers unnecessary re-renders in useBoardColumnFeatures.
+      if (state.recentlyCompletedFeatures.has(featureId)) return state;
+      const newSet = new Set(state.recentlyCompletedFeatures);
+      newSet.add(featureId);
+      return { recentlyCompletedFeatures: newSet };
+    });
+  },
+
+  clearRecentlyCompletedFeatures: () => {
+    // Idempotent: skip if already empty to avoid creating a new Set reference.
+    if (get().recentlyCompletedFeatures.size === 0) return;
+    set({ recentlyCompletedFeatures: new Set() });
+  },
+
   setMaxConcurrency: (max) => set({ maxConcurrency: max }),
 
   getMaxConcurrencyForWorktree: (projectId: string, branchName: string | null) => {
@@ -1029,7 +1154,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { skipVerificationInAutoMode: enabled });
+      await httpApi.settings.updateGlobal({ skipVerificationInAutoMode: enabled });
     } catch (error) {
       logger.error('Failed to sync skipVerificationInAutoMode:', error);
     }
@@ -1039,9 +1164,19 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { enableAiCommitMessages: enabled });
+      await httpApi.settings.updateGlobal({ enableAiCommitMessages: enabled });
     } catch (error) {
       logger.error('Failed to sync enableAiCommitMessages:', error);
+    }
+  },
+  setMergePostAction: async (action) => {
+    set({ mergePostAction: action });
+    // Sync to server
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ mergePostAction: action });
+    } catch (error) {
+      logger.error('Failed to sync mergePostAction:', error);
     }
   },
   setPlanUseSelectedWorktreeBranch: async (enabled) => {
@@ -1049,7 +1184,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { planUseSelectedWorktreeBranch: enabled });
+      await httpApi.settings.updateGlobal({ planUseSelectedWorktreeBranch: enabled });
     } catch (error) {
       logger.error('Failed to sync planUseSelectedWorktreeBranch:', error);
     }
@@ -1059,7 +1194,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { addFeatureUseSelectedWorktreeBranch: enabled });
+      await httpApi.settings.updateGlobal({ addFeatureUseSelectedWorktreeBranch: enabled });
     } catch (error) {
       logger.error('Failed to sync addFeatureUseSelectedWorktreeBranch:', error);
     }
@@ -1111,6 +1246,9 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   // Splash Screen actions
   setDisableSplashScreen: (disabled) => set({ disableSplashScreen: disabled }),
 
+  // Board Card Sorting (global default) actions
+  setDefaultSortNewestCardOnTop: (enabled) => set({ defaultSortNewestCardOnTop: enabled }),
+
   // Server Log Level actions
   setServerLogLevel: (level) => set({ serverLogLevel: level }),
   setEnableRequestLogging: (enabled) => set({ enableRequestLogging: enabled }),
@@ -1132,7 +1270,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { phaseModels: get().phaseModels });
+      await httpApi.settings.updateGlobal({ phaseModels: get().phaseModels });
     } catch (error) {
       logger.error('Failed to sync phase model:', error);
     }
@@ -1144,7 +1282,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { phaseModels: get().phaseModels });
+      await httpApi.settings.updateGlobal({ phaseModels: get().phaseModels });
     } catch (error) {
       logger.error('Failed to sync phase models:', error);
     }
@@ -1154,7 +1292,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { phaseModels: DEFAULT_PHASE_MODELS });
+      await httpApi.settings.updateGlobal({ phaseModels: DEFAULT_PHASE_MODELS });
     } catch (error) {
       logger.error('Failed to sync phase models reset:', error);
     }
@@ -1189,7 +1327,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ codexAutoLoadAgents: enabled });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { codexAutoLoadAgents: enabled });
+      await httpApi.settings.updateGlobal({ codexAutoLoadAgents: enabled });
     } catch (error) {
       logger.error('Failed to sync codexAutoLoadAgents:', error);
     }
@@ -1198,7 +1336,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ codexSandboxMode: mode });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { codexSandboxMode: mode });
+      await httpApi.settings.updateGlobal({ codexSandboxMode: mode });
     } catch (error) {
       logger.error('Failed to sync codexSandboxMode:', error);
     }
@@ -1207,7 +1345,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ codexApprovalPolicy: policy });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { codexApprovalPolicy: policy });
+      await httpApi.settings.updateGlobal({ codexApprovalPolicy: policy });
     } catch (error) {
       logger.error('Failed to sync codexApprovalPolicy:', error);
     }
@@ -1216,7 +1354,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ codexEnableWebSearch: enabled });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { codexEnableWebSearch: enabled });
+      await httpApi.settings.updateGlobal({ codexEnableWebSearch: enabled });
     } catch (error) {
       logger.error('Failed to sync codexEnableWebSearch:', error);
     }
@@ -1225,7 +1363,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ codexEnableImages: enabled });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { codexEnableImages: enabled });
+      await httpApi.settings.updateGlobal({ codexEnableImages: enabled });
     } catch (error) {
       logger.error('Failed to sync codexEnableImages:', error);
     }
@@ -1233,21 +1371,52 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   // OpenCode CLI Settings actions
   setEnabledOpencodeModels: (models) => set({ enabledOpencodeModels: models }),
-  setOpencodeDefaultModel: (model) => set({ opencodeDefaultModel: model }),
-  toggleOpencodeModel: (model, enabled) =>
+  setOpencodeDefaultModel: async (model) => {
+    set({ opencodeDefaultModel: model });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ opencodeDefaultModel: model });
+    } catch (error) {
+      logger.error('Failed to sync opencodeDefaultModel:', error);
+    }
+  },
+  toggleOpencodeModel: async (model, enabled) => {
     set((state) => ({
       enabledOpencodeModels: enabled
-        ? [...state.enabledOpencodeModels, model]
+        ? [...new Set([...state.enabledOpencodeModels, model])]
         : state.enabledOpencodeModels.filter((m) => m !== model),
-    })),
+    }));
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ enabledOpencodeModels: get().enabledOpencodeModels });
+    } catch (error) {
+      logger.error('Failed to sync enabledOpencodeModels:', error);
+    }
+  },
   setDynamicOpencodeModels: (models) => set({ dynamicOpencodeModels: models }),
-  setEnabledDynamicModelIds: (ids) => set({ enabledDynamicModelIds: ids }),
-  toggleDynamicModel: (modelId, enabled) =>
+  setEnabledDynamicModelIds: async (ids) => {
+    const deduped = Array.from(new Set(ids));
+    set({ enabledDynamicModelIds: deduped });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ enabledDynamicModelIds: deduped });
+    } catch (error) {
+      logger.error('Failed to sync enabledDynamicModelIds:', error);
+    }
+  },
+  toggleDynamicModel: async (modelId, enabled) => {
     set((state) => ({
       enabledDynamicModelIds: enabled
-        ? [...state.enabledDynamicModelIds, modelId]
+        ? [...new Set([...state.enabledDynamicModelIds, modelId])]
         : state.enabledDynamicModelIds.filter((id) => id !== modelId),
-    })),
+    }));
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ enabledDynamicModelIds: get().enabledDynamicModelIds });
+    } catch (error) {
+      logger.error('Failed to sync enabledDynamicModelIds:', error);
+    }
+  },
   setCachedOpencodeProviders: (providers) => set({ cachedOpencodeProviders: providers }),
 
   // Gemini CLI Settings actions
@@ -1285,16 +1454,25 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ autoLoadClaudeMd: enabled });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { autoLoadClaudeMd: enabled });
+      await httpApi.settings.updateGlobal({ autoLoadClaudeMd: enabled });
     } catch (error) {
       logger.error('Failed to sync autoLoadClaudeMd:', error);
+    }
+  },
+  setUseClaudeCodeSystemPrompt: async (enabled) => {
+    set({ useClaudeCodeSystemPrompt: enabled });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ useClaudeCodeSystemPrompt: enabled });
+    } catch (error) {
+      logger.error('Failed to sync useClaudeCodeSystemPrompt:', error);
     }
   },
   setSkipSandboxWarning: async (skip) => {
     set({ skipSandboxWarning: skip });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { skipSandboxWarning: skip });
+      await httpApi.settings.updateGlobal({ skipSandboxWarning: skip });
     } catch (error) {
       logger.error('Failed to sync skipSandboxWarning:', error);
     }
@@ -1302,6 +1480,12 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   // Editor Configuration actions
   setDefaultEditorCommand: (command) => set({ defaultEditorCommand: command }),
+
+  // File Editor Settings actions
+  setEditorFontSize: (size) => set({ editorFontSize: size }),
+  setEditorFontFamily: (fontFamily) => set({ editorFontFamily: fontFamily }),
+  setEditorAutoSave: (enabled) => set({ editorAutoSave: enabled }),
+  setEditorAutoSaveDelay: (delay) => set({ editorAutoSaveDelay: delay }),
 
   // Terminal Configuration actions
   setDefaultTerminalId: (terminalId) => set({ defaultTerminalId: terminalId }),
@@ -1311,14 +1495,104 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ promptCustomization: customization });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { promptCustomization: customization });
+      await httpApi.settings.updateGlobal({ promptCustomization: customization });
     } catch (error) {
       logger.error('Failed to sync prompt customization:', error);
     }
   },
 
   // Event Hook actions
-  setEventHooks: (hooks) => set({ eventHooks: hooks }),
+  setEventHooks: async (hooks) => {
+    set({ eventHooks: hooks });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({
+        eventHooks: hooks,
+        // Signal the server that an empty array is intentional (not a wipe from stale state)
+        ...(hooks.length === 0 ? { __allowEmptyEventHooks: true } : {}),
+      });
+    } catch (error) {
+      logger.error('Failed to sync event hooks:', error);
+    }
+  },
+
+  // Ntfy Endpoint actions
+  setNtfyEndpoints: async (endpoints) => {
+    set({ ntfyEndpoints: endpoints });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({
+        ntfyEndpoints: endpoints,
+        // Signal the server that an empty array is intentional (not a wipe from stale state)
+        ...(endpoints.length === 0 ? { __allowEmptyNtfyEndpoints: true } : {}),
+      });
+    } catch (error) {
+      logger.error('Failed to sync ntfy endpoints:', error);
+    }
+  },
+
+  // Feature Template actions
+  setFeatureTemplates: async (templates) => {
+    set({ featureTemplates: templates });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ featureTemplates: templates });
+    } catch (error) {
+      logger.error('Failed to sync feature templates:', error);
+    }
+  },
+  addFeatureTemplate: async (template) => {
+    set((state) => ({
+      featureTemplates: [...state.featureTemplates, template],
+    }));
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ featureTemplates: get().featureTemplates });
+    } catch (error) {
+      logger.error('Failed to sync feature templates:', error);
+    }
+  },
+  updateFeatureTemplate: async (id, updates) => {
+    set((state) => ({
+      featureTemplates: state.featureTemplates.map((t) => (t.id === id ? { ...t, ...updates } : t)),
+    }));
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ featureTemplates: get().featureTemplates });
+    } catch (error) {
+      logger.error('Failed to sync feature templates:', error);
+    }
+  },
+  deleteFeatureTemplate: async (id) => {
+    set((state) => ({
+      featureTemplates: state.featureTemplates.filter((t) => t.id !== id),
+    }));
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ featureTemplates: get().featureTemplates });
+    } catch (error) {
+      logger.error('Failed to sync feature templates:', error);
+    }
+  },
+  reorderFeatureTemplates: async (templateIds) => {
+    set((state) => {
+      const templateMap = new Map(state.featureTemplates.map((t) => [t.id, t]));
+      const reordered: FeatureTemplate[] = [];
+      templateIds.forEach((id, index) => {
+        const template = templateMap.get(id);
+        if (template) {
+          reordered.push({ ...template, order: index });
+        }
+      });
+      return { featureTemplates: reordered };
+    });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ featureTemplates: get().featureTemplates });
+    } catch (error) {
+      logger.error('Failed to sync feature templates:', error);
+    }
+  },
 
   // Claude-Compatible Provider actions (new system)
   addClaudeCompatibleProvider: async (provider) => {
@@ -1327,7 +1601,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', {
+      await httpApi.settings.updateGlobal({
         claudeCompatibleProviders: get().claudeCompatibleProviders,
       });
     } catch (error) {
@@ -1342,7 +1616,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', {
+      await httpApi.settings.updateGlobal({
         claudeCompatibleProviders: get().claudeCompatibleProviders,
       });
     } catch (error) {
@@ -1355,7 +1629,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', {
+      await httpApi.settings.updateGlobal({
         claudeCompatibleProviders: get().claudeCompatibleProviders,
       });
     } catch (error) {
@@ -1366,7 +1640,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ claudeCompatibleProviders: providers });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { claudeCompatibleProviders: providers });
+      await httpApi.settings.updateGlobal({ claudeCompatibleProviders: providers });
     } catch (error) {
       logger.error('Failed to sync Claude-compatible providers:', error);
     }
@@ -1379,7 +1653,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', {
+      await httpApi.settings.updateGlobal({
         claudeCompatibleProviders: get().claudeCompatibleProviders,
       });
     } catch (error) {
@@ -1394,7 +1668,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { claudeApiProfiles: get().claudeApiProfiles });
+      await httpApi.settings.updateGlobal({ claudeApiProfiles: get().claudeApiProfiles });
     } catch (error) {
       logger.error('Failed to sync Claude API profiles:', error);
     }
@@ -1407,7 +1681,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { claudeApiProfiles: get().claudeApiProfiles });
+      await httpApi.settings.updateGlobal({ claudeApiProfiles: get().claudeApiProfiles });
     } catch (error) {
       logger.error('Failed to sync Claude API profiles:', error);
     }
@@ -1420,7 +1694,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', {
+      await httpApi.settings.updateGlobal({
         claudeApiProfiles: get().claudeApiProfiles,
         activeClaudeApiProfileId: get().activeClaudeApiProfileId,
       });
@@ -1432,7 +1706,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ activeClaudeApiProfileId: id });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { activeClaudeApiProfileId: id });
+      await httpApi.settings.updateGlobal({ activeClaudeApiProfileId: id });
     } catch (error) {
       logger.error('Failed to sync active Claude API profile:', error);
     }
@@ -1441,7 +1715,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     set({ claudeApiProfiles: profiles });
     try {
       const httpApi = getHttpApiClient();
-      await httpApi.put('/api/settings', { claudeApiProfiles: profiles });
+      await httpApi.settings.updateGlobal({ claudeApiProfiles: profiles });
     } catch (error) {
       logger.error('Failed to sync Claude API profiles:', error);
     }
@@ -1485,6 +1759,16 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       } as Record<string, string>,
     })),
   getLastSelectedSession: (projectPath) => get().lastSelectedSessionByProject[projectPath] ?? null,
+
+  // Agent model selection actions
+  setAgentModelForSession: (sessionId, model) =>
+    set((state) => ({
+      agentModelBySession: {
+        ...state.agentModelBySession,
+        [sessionId]: model,
+      },
+    })),
+  getAgentModelForSession: (sessionId) => get().agentModelBySession[sessionId] ?? null,
 
   // Board Background actions
   setBoardBackground: (projectPath, imagePath) =>
@@ -1851,6 +2135,16 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       terminalState: { ...state.terminalState, openTerminalMode: mode },
     })),
 
+  setTerminalBackgroundColor: (color) =>
+    set((state) => ({
+      terminalState: { ...state.terminalState, customBackgroundColor: color },
+    })),
+
+  setTerminalForegroundColor: (color) =>
+    set((state) => ({
+      terminalState: { ...state.terminalState, customForegroundColor: color },
+    })),
+
   addTerminalTab: (name) => {
     const newTabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const tabNumber = get().terminalState.tabs.length + 1;
@@ -2131,7 +2425,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       const updateSizes = (layout: TerminalPanelContent): TerminalPanelContent => {
         if (layout.type === 'split') {
           // Find matching panels and update sizes
-          const updatedPanels = layout.panels.map((panel, index) => {
+          const updatedPanels = layout.panels.map((panel, _index) => {
             // Generate key for this panel
             const panelKey =
               panel.type === 'split'
@@ -2236,9 +2530,93 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   setSpecCreatingForProject: (projectPath) => set({ specCreatingForProject: projectPath }),
   isSpecCreatingForProject: (projectPath) => get().specCreatingForProject === projectPath,
 
-  setDefaultPlanningMode: (mode) => set({ defaultPlanningMode: mode }),
-  setDefaultRequirePlanApproval: (require) => set({ defaultRequirePlanApproval: require }),
-  setDefaultFeatureModel: (entry) => set({ defaultFeatureModel: entry }),
+  setDefaultPlanningMode: async (mode) => {
+    set({ defaultPlanningMode: mode });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ defaultPlanningMode: mode });
+    } catch (error) {
+      logger.error('Failed to sync defaultPlanningMode:', error);
+    }
+  },
+  setDefaultRequirePlanApproval: async (require) => {
+    set({ defaultRequirePlanApproval: require });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ defaultRequirePlanApproval: require });
+    } catch (error) {
+      logger.error('Failed to sync defaultRequirePlanApproval:', error);
+    }
+  },
+  setDefaultFeatureModel: async (entry) => {
+    set({ defaultFeatureModel: entry });
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ defaultFeatureModel: entry });
+    } catch (error) {
+      logger.error('Failed to sync defaultFeatureModel:', error);
+    }
+  },
+
+  setDefaultThinkingLevel: async (level) => {
+    const currentModel = get().defaultFeatureModel;
+    const modelId = currentModel.model;
+    const availableLevels = getThinkingLevelsForModel(modelId);
+
+    // Also update defaultFeatureModel's thinkingLevel if compatible
+    if (availableLevels.includes(level)) {
+      const updatedFeatureModel = { ...currentModel, thinkingLevel: level };
+      set({
+        defaultThinkingLevel: level,
+        defaultFeatureModel: updatedFeatureModel,
+      });
+      // Sync to server - include defaultFeatureModel since thinkingLevel is embedded there too
+      try {
+        const httpApi = getHttpApiClient();
+        await httpApi.settings.updateGlobal({
+          defaultThinkingLevel: level,
+          defaultFeatureModel: updatedFeatureModel,
+        });
+      } catch (error) {
+        logger.error('Failed to sync defaultThinkingLevel:', error);
+      }
+    } else {
+      set({ defaultThinkingLevel: level });
+      // Sync to server
+      try {
+        const httpApi = getHttpApiClient();
+        await httpApi.settings.updateGlobal({ defaultThinkingLevel: level });
+      } catch (error) {
+        logger.error('Failed to sync defaultThinkingLevel:', error);
+      }
+    }
+  },
+
+  setDefaultReasoningEffort: async (effort) => {
+    set({ defaultReasoningEffort: effort });
+    // Sync to server
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ defaultReasoningEffort: effort });
+    } catch (error) {
+      logger.error('Failed to sync defaultReasoningEffort:', error);
+    }
+  },
+
+  setDefaultMaxTurns: async (maxTurns: number) => {
+    // Guard against NaN/Infinity before flooring and clamping
+    const safeValue = Number.isFinite(maxTurns) ? maxTurns : 1;
+    // Clamp to valid range
+    const clamped = Math.max(1, Math.min(10000, Math.floor(safeValue)));
+    set({ defaultMaxTurns: clamped });
+    // Sync to server
+    try {
+      const httpApi = getHttpApiClient();
+      await httpApi.settings.updateGlobal({ defaultMaxTurns: clamped });
+    } catch (error) {
+      logger.error('Failed to sync defaultMaxTurns:', error);
+    }
+  },
 
   // Plan Approval actions
   setPendingPlanApproval: (approval) => set({ pendingPlanApproval: approval }),
@@ -2382,6 +2760,75 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     return projectOverride !== undefined ? projectOverride : get().useWorktrees;
   },
 
+  // Worktree Copy Files actions
+  setWorktreeCopyFiles: (projectPath, files) =>
+    set((state) => ({
+      worktreeCopyFilesByProject: {
+        ...state.worktreeCopyFilesByProject,
+        [projectPath]: files,
+      },
+    })),
+  getWorktreeCopyFiles: (projectPath) => get().worktreeCopyFilesByProject[projectPath] ?? [],
+
+  // Worktree Display Settings actions
+  setPinnedWorktreesCount: (projectPath, count) =>
+    set((state) => ({
+      pinnedWorktreesCountByProject: {
+        ...state.pinnedWorktreesCountByProject,
+        [projectPath]: count,
+      },
+    })),
+  getPinnedWorktreesCount: (projectPath) => get().pinnedWorktreesCountByProject[projectPath] ?? 0,
+  setPinnedWorktreeBranches: (projectPath, branches) =>
+    set((state) => ({
+      pinnedWorktreeBranchesByProject: {
+        ...state.pinnedWorktreeBranchesByProject,
+        [projectPath]: branches,
+      },
+    })),
+  getPinnedWorktreeBranches: (projectPath) =>
+    get().pinnedWorktreeBranchesByProject[projectPath] ?? [],
+  swapPinnedWorktreeBranch: (projectPath, slotIndex, newBranch) =>
+    set((state) => {
+      const src = state.pinnedWorktreeBranchesByProject[projectPath] ?? [];
+      // Pre-fill up to slotIndex to prevent sparse holes
+      const current: string[] = Array.from(
+        { length: Math.max(src.length, slotIndex + 1) },
+        (_, i) => src[i] ?? ''
+      );
+      // If the new branch is already in another slot, swap them (only when newBranch is non-empty)
+      const existingIndex = newBranch !== '' ? current.indexOf(newBranch) : -1;
+      if (existingIndex !== -1 && existingIndex !== slotIndex) {
+        // Swap: put the old branch from this slot into the other slot
+        current[existingIndex] = current[slotIndex];
+      }
+      current[slotIndex] = newBranch;
+      return {
+        pinnedWorktreeBranchesByProject: {
+          ...state.pinnedWorktreeBranchesByProject,
+          [projectPath]: current,
+        },
+      };
+    }),
+  setWorktreeDropdownThreshold: (projectPath, threshold) =>
+    set((state) => ({
+      worktreeDropdownThresholdByProject: {
+        ...state.worktreeDropdownThresholdByProject,
+        [projectPath]: threshold,
+      },
+    })),
+  getWorktreeDropdownThreshold: (projectPath) =>
+    get().worktreeDropdownThresholdByProject[projectPath] ?? 3,
+  setAlwaysUseWorktreeDropdown: (projectPath, always) =>
+    set((state) => ({
+      alwaysUseWorktreeDropdownByProject: {
+        ...state.alwaysUseWorktreeDropdownByProject,
+        [projectPath]: always,
+      },
+    })),
+  getAlwaysUseWorktreeDropdown: (projectPath) =>
+    get().alwaysUseWorktreeDropdownByProject[projectPath] ?? true,
+
   // UI State actions
   setWorktreePanelCollapsed: (collapsed) => set({ worktreePanelCollapsed: collapsed }),
   setLastProjectDir: (dir) => set({ lastProjectDir: dir }),
@@ -2399,6 +2846,16 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   // Codex Usage Tracking actions
   setCodexUsage: (usage) => set({ codexUsage: usage, codexUsageLastUpdated: Date.now() }),
+
+  // z.ai Usage Tracking actions
+  setZaiUsage: (usage) => set({ zaiUsage: usage, zaiUsageLastUpdated: usage ? Date.now() : null }),
+
+  // Gemini Usage Tracking actions
+  setGeminiUsage: (usage, lastUpdated) =>
+    set({
+      geminiUsage: usage,
+      geminiUsageLastUpdated: lastUpdated ?? (usage ? Date.now() : null),
+    }),
 
   // Codex Models actions
   fetchCodexModels: async (forceRefresh = false) => {
@@ -2520,13 +2977,43 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
           (m) => !m.id.startsWith(OPENCODE_BEDROCK_MODEL_PREFIX)
         );
 
+        // Auto-enable only models that are genuinely new (never seen before).
+        // Models that existed previously and were explicitly deselected by the user
+        // should NOT be re-enabled on subsequent fetches.
+        const currentEnabledIds = get().enabledDynamicModelIds;
+        const currentKnownIds = get().knownDynamicModelIds;
+        const allFetchedIds = filteredModels.map((m) => m.id);
+        // Only auto-enable models that have NEVER been seen before (not in knownDynamicModelIds)
+        const trulyNewModelIds = allFetchedIds.filter((id) => !currentKnownIds.includes(id));
+        const updatedEnabledIds =
+          trulyNewModelIds.length > 0
+            ? [...new Set([...currentEnabledIds, ...trulyNewModelIds])]
+            : currentEnabledIds;
+        // Track all discovered model IDs (union of known + newly fetched)
+        const updatedKnownIds = [...new Set([...currentKnownIds, ...allFetchedIds])];
+
         set({
           dynamicOpencodeModels: filteredModels,
+          enabledDynamicModelIds: updatedEnabledIds,
+          knownDynamicModelIds: updatedKnownIds,
           cachedOpencodeProviders: data.providers ?? [],
           opencodeModelsLoading: false,
           opencodeModelsLastFetched: now,
           opencodeModelsError: null,
         });
+
+        // Persist newly enabled model IDs and known model IDs to server settings
+        if (trulyNewModelIds.length > 0) {
+          try {
+            const httpApi = getHttpApiClient();
+            await httpApi.settings.updateGlobal({
+              enabledDynamicModelIds: updatedEnabledIds,
+              knownDynamicModelIds: updatedKnownIds,
+            });
+          } catch (syncError) {
+            logger.error('Failed to sync enabledDynamicModelIds after auto-enable:', syncError);
+          }
+        }
       } else {
         set({
           opencodeModelsLoading: false,

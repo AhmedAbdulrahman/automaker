@@ -254,6 +254,9 @@ This feature depends on: {{dependencies}}
 
 **CRITICAL - Port Protection:**
 NEVER kill or terminate processes running on ports ${STATIC_PORT} or ${SERVER_PORT}. These are reserved for the Instabuild application. Killing these ports will crash Instabuild and terminate this session.
+
+**CRITICAL - Process Protection:**
+NEVER run \`pkill -f "vite"\` or \`pkill -f "tsx"\` or any broad process-killing commands targeting development server processes. These commands will kill the Instabuild application itself and terminate your session. If you need to debug tests, use targeted approaches such as running specific test files, using test runner flags, or restarting individual processes through proper channels.
 `;
 
 export const DEFAULT_AUTO_MODE_FOLLOW_UP_PROMPT_TEMPLATE = `## Follow-up on Feature Implementation
@@ -291,6 +294,23 @@ export const DEFAULT_AUTO_MODE_PIPELINE_STEP_PROMPT_TEMPLATE = `## Pipeline Step
 
 ### Pipeline Step Instructions
 {{stepInstructions}}
+
+**CRITICAL: After completing the instructions, you MUST output a summary using this EXACT format:**
+
+<summary>
+## Summary: {{stepName}}
+
+### Changes Implemented
+- [List all changes made in this step]
+
+### Files Modified
+- [List all files modified in this step]
+
+### Outcome
+- [Describe the result of this step]
+</summary>
+
+The <summary> and </summary> tags MUST be on their own lines. This is REQUIRED.
 `;
 
 /**
@@ -347,6 +367,9 @@ You have access to several tools:
 
 **CRITICAL - Port Protection:**
 NEVER kill or terminate processes running on ports ${STATIC_PORT} or ${SERVER_PORT}. These are reserved for the Instabuild application itself. Killing these ports will crash Instabuild and terminate your session.
+
+**CRITICAL - Process Protection:**
+NEVER run \`pkill -f "vite"\` or \`pkill -f "tsx"\` or any broad process-killing commands targeting development server processes. These commands will kill the Automaker application itself and terminate your session. If you need to debug tests, use targeted approaches such as running specific test files, using test runner flags, or restarting individual processes through proper channels.
 
 Remember: You're a collaborative partner in the development process. Be helpful, clear, and thorough.`;
 
@@ -490,6 +513,7 @@ Rules:
 - Focus on WHAT changed and WHY (if clear from the diff), not HOW
 - No quotes, backticks, or extra formatting
 - If there are multiple changes, provide a brief summary on the first line
+- Ignore changes to gitignored files (e.g., node_modules, dist, build, .env files, lock files, generated files, binary artifacts, coverage reports, cache directories). Focus only on meaningful source code changes that are tracked by git
 
 Examples:
 - feat: Add dark mode toggle to settings

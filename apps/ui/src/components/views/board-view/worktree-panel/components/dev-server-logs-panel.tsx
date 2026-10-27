@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import {
@@ -54,6 +54,8 @@ export function DevServerLogsPanel({
 
   const {
     logs,
+    logsVersion,
+    didTrim,
     isRunning,
     isLoading,
     error,
@@ -81,8 +83,9 @@ export function DevServerLogsPanel({
       return;
     }
 
-    // If logs got shorter (e.g., cleared), rewrite all
-    if (logs.length < lastLogsLengthRef.current) {
+    // If logs got shorter (e.g., cleared) or buffer was trimmed (content shifted),
+    // do a full rewrite so the terminal stays in sync
+    if (logs.length < lastLogsLengthRef.current || didTrim) {
       xtermRef.current.write(logs);
       lastLogsLengthRef.current = logs.length;
       return;
@@ -94,7 +97,7 @@ export function DevServerLogsPanel({
       xtermRef.current.append(newContent);
       lastLogsLengthRef.current = logs.length;
     }
-  }, [logs, worktree?.path]);
+  }, [logs, logsVersion, didTrim, worktree?.path]);
 
   // Reset when panel opens with a new worktree
   useEffect(() => {
@@ -123,20 +126,29 @@ export function DevServerLogsPanel({
     }
   }, []);
 
+  const lineCount = useMemo(() => {
+    if (!logs) return 0;
+    // Count newlines directly instead of allocating a split array
+    let count = 1;
+    for (let i = 0; i < logs.length; i++) {
+      if (logs.charCodeAt(i) === 10) count++;
+    }
+    return count;
+  }, [logs]);
+
   if (!worktree) return null;
 
   const formattedStartTime = formatStartedAt(startedAt);
-  const lineCount = logs ? logs.split('\n').length : 0;
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
       <DialogContent
-        className="w-full h-full max-w-full max-h-full sm:w-[70vw] sm:max-w-[900px] sm:max-h-[85vh] sm:h-auto sm:rounded-xl rounded-none flex flex-col gap-0 p-0 overflow-hidden"
+        className="w-full h-full max-w-full max-h-full sm:w-[70vw] sm:max-w-[900px] sm:max-h-[85vh] sm:h-auto sm:rounded-xl rounded-none flex flex-col gap-0 p-0 overflow-hidden dialog-fullscreen-mobile"
         data-testid="dev-server-logs-panel"
         compact
       >
         {/* Compact Header */}
-        <DialogHeader className="shrink-0 px-4 py-3 border-b border-border/50 pr-12">
+        <DialogHeader className="shrink-0 px-4 py-3 border-b border-border/50 pr-12 dialog-compact-header-mobile">
           <div className="flex items-center justify-between">
             <DialogTitle className="flex items-center gap-2 text-base">
               <Terminal className="w-4 h-4 text-primary" />

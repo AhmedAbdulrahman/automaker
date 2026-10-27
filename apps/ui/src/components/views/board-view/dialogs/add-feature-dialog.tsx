@@ -24,11 +24,11 @@ import {
 import { Play, Cpu, FolderKanban, Settings2 } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
-import { modelSupportsThinking } from '@/lib/utils';
-import { useAppStore, ThinkingLevel, FeatureImage, PlanningMode, Feature } from '@/store/app-store';
+import { cn, normalizeModelEntry } from '@/lib/utils';
+import { useAppStore } from '@/store/app-store';
+import type { ThinkingLevel, PlanningMode, Feature, FeatureImage } from '@/store/types';
 import type { ReasoningEffort, PhaseModelEntry, AgentModel } from '@automaker/types';
-import { supportsReasoningEffort } from '@automaker/types';
+import { normalizeThinkingLevelForModel, getThinkingLevelsForModel } from '@automaker/types';
 import {
   PrioritySelector,
   WorkModeSelector,
@@ -85,6 +85,7 @@ type FeatureData = {
   model: AgentModel;
   thinkingLevel: ThinkingLevel;
   reasoningEffort: ReasoningEffort;
+  providerId?: string;
   branchName: string;
   priority: number;
   planningMode: PlanningMode;
@@ -123,6 +124,18 @@ interface AddFeatureDialogProps {
    * This is used when the "Default to worktree mode" setting is disabled.
    */
   forceCurrentBranchMode?: boolean;
+  /**
+   * Pre-filled title for the feature (e.g., from a GitHub issue).
+   */
+  prefilledTitle?: string;
+  /**
+   * Pre-filled description for the feature (e.g., from a GitHub issue).
+   */
+  prefilledDescription?: string;
+  /**
+   * Pre-filled category for the feature (e.g., 'From GitHub').
+   */
+  prefilledCategory?: string;
 }
 
 /**
@@ -149,6 +162,9 @@ export function AddFeatureDialog({
   projectPath,
   selectedNonMainWorktreeBranch,
   forceCurrentBranchMode,
+  prefilledTitle,
+  prefilledDescription,
+  prefilledCategory,
 }: AddFeatureDialogProps) {
   const isSpawnMode = !!parentFeature;
   const navigate = useNavigate();
@@ -196,6 +212,7 @@ export function AddFeatureDialog({
     defaultRequirePlanApproval,
     useWorktrees,
     defaultFeatureModel,
+    defaultThinkingLevel,
     currentProject,
   } = useAppStore();
 
@@ -211,6 +228,11 @@ export function AddFeatureDialog({
     wasOpenRef.current = open;
 
     if (justOpened) {
+      // Initialize with prefilled values if provided, otherwise use defaults
+      setTitle(prefilledTitle ?? '');
+      setDescription(prefilledDescription ?? '');
+      setCategory(prefilledCategory ?? '');
+
       setSkipTests(defaultSkipTests);
       // When a non-main worktree is selected, use its branch name for custom mode
       // Otherwise, use the default branch
@@ -220,7 +242,22 @@ export function AddFeatureDialog({
       );
       setPlanningMode(defaultPlanningMode);
       setRequirePlanApproval(defaultRequirePlanApproval);
-      setModelEntry(effectiveDefaultFeatureModel);
+
+      // Apply defaultThinkingLevel from settings to the model entry.
+      // This ensures the "Quick-Select Defaults" thinking level setting is respected
+      // even when the user doesn't change the model in the dropdown.
+      const modelId =
+        typeof effectiveDefaultFeatureModel.model === 'string'
+          ? effectiveDefaultFeatureModel.model
+          : '';
+      const availableLevels = getThinkingLevelsForModel(modelId);
+      const effectiveThinkingLevel = availableLevels.includes(defaultThinkingLevel)
+        ? defaultThinkingLevel
+        : availableLevels[0];
+      setModelEntry({
+        ...effectiveDefaultFeatureModel,
+        thinkingLevel: effectiveThinkingLevel,
+      });
 
       // Initialize description history (empty for new feature)
       setDescriptionHistory([]);
@@ -249,22 +286,29 @@ export function AddFeatureDialog({
     defaultPlanningMode,
     defaultRequirePlanApproval,
     effectiveDefaultFeatureModel,
+    defaultThinkingLevel,
     useWorktrees,
     selectedNonMainWorktreeBranch,
     forceCurrentBranchMode,
     parentFeature,
     allFeatures,
+    prefilledTitle,
+    prefilledDescription,
+    prefilledCategory,
   ]);
 
-  // Clear requirePlanApproval when planning mode is skip or lite
+  // Clear requirePlanApproval when planning mode is skip (lite supports approval)
   useEffect(() => {
-    if (planningMode === 'skip' || planningMode === 'lite') {
+    if (planningMode === 'skip') {
       setRequirePlanApproval(false);
     }
   }, [planningMode]);
 
   const handleModelChange = (entry: PhaseModelEntry) => {
-    setModelEntry(entry);
+    const modelId = typeof entry.model === 'string' ? entry.model : '';
+    const normalizedThinkingLevel = normalizeThinkingLevelForModel(modelId, entry.thinkingLevel);
+
+    setModelEntry({ ...entry, thinkingLevel: normalizedThinkingLevel });
   };
 
   const buildFeatureData = (): FeatureData | null => {
@@ -279,13 +323,7 @@ export function AddFeatureDialog({
     }
 
     const finalCategory = category || 'Uncategorized';
-    const selectedModel = modelEntry.model;
-    const normalizedThinking = modelSupportsThinking(selectedModel)
-      ? modelEntry.thinkingLevel || 'none'
-      : 'none';
-    const normalizedReasoning = supportsReasoningEffort(selectedModel)
-      ? modelEntry.reasoningEffort || 'none'
-      : 'none';
+    const normalizedEntry = normalizeModelEntry(modelEntry);
 
     // For 'current' mode, use empty string (work on current branch)
     // For 'auto' mode, use empty string (will be auto-generated in use-board-actions)
@@ -333,9 +371,10 @@ export function AddFeatureDialog({
       imagePaths,
       textFilePaths,
       skipTests,
-      model: selectedModel,
-      thinkingLevel: normalizedThinking,
-      reasoningEffort: normalizedReasoning,
+      model: normalizedEntry.model,
+      thinkingLevel: normalizedEntry.thinkingLevel,
+      reasoningEffort: normalizedEntry.reasoningEffort,
+      providerId: normalizedEntry.providerId,
       branchName: finalBranchName,
       priority,
       planningMode,
@@ -358,7 +397,19 @@ export function AddFeatureDialog({
     // When a non-main worktree is selected, use its branch name for custom mode
     setBranchName(selectedNonMainWorktreeBranch || '');
     setPriority(2);
-    setModelEntry(effectiveDefaultFeatureModel);
+    // Apply defaultThinkingLevel to the model entry (same logic as dialog open)
+    const resetModelId =
+      typeof effectiveDefaultFeatureModel.model === 'string'
+        ? effectiveDefaultFeatureModel.model
+        : '';
+    const resetAvailableLevels = getThinkingLevelsForModel(resetModelId);
+    const resetThinkingLevel = resetAvailableLevels.includes(defaultThinkingLevel)
+      ? defaultThinkingLevel
+      : resetAvailableLevels[0];
+    setModelEntry({
+      ...effectiveDefaultFeatureModel,
+      thinkingLevel: resetThinkingLevel,
+    });
     setWorkMode(
       getDefaultWorkMode(useWorktrees, selectedNonMainWorktreeBranch, forceCurrentBranchMode)
     );
@@ -583,14 +634,14 @@ export function AddFeatureDialog({
                       id="add-feature-require-approval"
                       checked={requirePlanApproval}
                       onCheckedChange={(checked) => setRequirePlanApproval(!!checked)}
-                      disabled={planningMode === 'skip' || planningMode === 'lite'}
+                      disabled={planningMode === 'skip'}
                       data-testid="add-feature-planning-require-approval-checkbox"
                     />
                     <Label
                       htmlFor="add-feature-require-approval"
                       className={cn(
                         'text-xs font-normal',
-                        planningMode === 'skip' || planningMode === 'lite'
+                        planningMode === 'skip'
                           ? 'cursor-not-allowed text-muted-foreground'
                           : 'cursor-pointer'
                       )}

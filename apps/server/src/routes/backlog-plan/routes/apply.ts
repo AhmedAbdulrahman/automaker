@@ -3,13 +3,23 @@
  */
 
 import type { Request, Response } from 'express';
-import type { BacklogPlanResult, BacklogChange, Feature } from '@automaker/types';
+import { resolvePhaseModel } from '@automaker/model-resolver';
+import type { BacklogPlanResult, PhaseModelEntry, PlanningMode } from '@automaker/types';
 import { FeatureLoader } from '../../../services/feature-loader.js';
+import type { SettingsService } from '../../../services/settings-service.js';
 import { clearBacklogPlan, getErrorMessage, logError, logger } from '../common.js';
 
 const featureLoader = new FeatureLoader();
 
-export function createApplyHandler() {
+function normalizePhaseModelEntry(
+  entry: PhaseModelEntry | string | undefined | null
+): PhaseModelEntry | undefined {
+  if (!entry) return undefined;
+  if (typeof entry === 'string') return { model: entry };
+  return entry;
+}
+
+export function createApplyHandler(settingsService?: SettingsService) {
   return async (req: Request, res: Response): Promise<void> => {
     try {
       const {
@@ -38,6 +48,23 @@ export function createApplyHandler() {
         return;
       }
 
+      let defaultPlanningMode: PlanningMode = 'skip';
+      let defaultRequirePlanApproval = false;
+      let defaultModelEntry: PhaseModelEntry | undefined;
+
+      if (settingsService) {
+        const globalSettings = await settingsService.getGlobalSettings();
+        const projectSettings = await settingsService.getProjectSettings(projectPath);
+
+        defaultPlanningMode = globalSettings.defaultPlanningMode ?? 'skip';
+        defaultRequirePlanApproval = globalSettings.defaultRequirePlanApproval ?? false;
+        defaultModelEntry = normalizePhaseModelEntry(
+          projectSettings.defaultFeatureModel ?? globalSettings.defaultFeatureModel
+        );
+      }
+
+      const resolvedDefaultModel = resolvePhaseModel(defaultModelEntry);
+
       const appliedChanges: string[] = [];
 
       // Load current features for dependency validation
@@ -58,6 +85,9 @@ export function createApplyHandler() {
             if (feature.dependencies?.includes(change.featureId)) {
               const newDeps = feature.dependencies.filter((d) => d !== change.featureId);
               await featureLoader.update(projectPath, feature.id, { dependencies: newDeps });
+              // Mutate the in-memory feature object so subsequent deletions use the updated
+              // dependency list and don't reintroduce already-removed dependency IDs.
+              feature.dependencies = newDeps;
               logger.info(
                 `[BacklogPlan] Removed dependency ${change.featureId} from ${feature.id}`
               );
@@ -85,6 +115,12 @@ export function createApplyHandler() {
         if (!change.feature) continue;
 
         try {
+          const effectivePlanningMode = change.feature.planningMode ?? defaultPlanningMode;
+          const effectiveRequirePlanApproval =
+            effectivePlanningMode === 'skip' || effectivePlanningMode === 'lite'
+              ? false
+              : (change.feature.requirePlanApproval ?? defaultRequirePlanApproval);
+
           // Create the new feature - use the AI-generated ID if provided
           const newFeature = await featureLoader.create(projectPath, {
             id: change.feature.id, // Use descriptive ID from AI if provided
@@ -94,6 +130,12 @@ export function createApplyHandler() {
             dependencies: change.feature.dependencies,
             priority: change.feature.priority,
             status: 'backlog',
+            model: change.feature.model ?? resolvedDefaultModel.model,
+            thinkingLevel: change.feature.thinkingLevel ?? resolvedDefaultModel.thinkingLevel,
+            reasoningEffort: change.feature.reasoningEffort ?? resolvedDefaultModel.reasoningEffort,
+            providerId: change.feature.providerId ?? resolvedDefaultModel.providerId,
+            planningMode: effectivePlanningMode,
+            requirePlanApproval: effectiveRequirePlanApproval,
             branchName,
           });
 

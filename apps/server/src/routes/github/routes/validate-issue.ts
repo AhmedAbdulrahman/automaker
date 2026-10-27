@@ -25,7 +25,7 @@ import {
   isOpencodeModel,
   supportsStructuredOutput,
 } from '@automaker/types';
-import { resolvePhaseModel } from '@automaker/model-resolver';
+import { resolvePhaseModel, resolveModelString } from '@automaker/model-resolver';
 import { extractJson } from '../../../lib/json-extractor.js';
 import { writeValidation } from '../../../lib/validation-storage.js';
 import { streamingQuery } from '../../../providers/simple-query-service.js';
@@ -38,7 +38,7 @@ import {
 import {
   getPromptCustomization,
   getAutoLoadClaudeMdSetting,
-  getProviderByModelId,
+  resolveProviderContext,
 } from '../../../lib/settings-helpers.js';
 import {
   trySetValidationRunning,
@@ -64,6 +64,8 @@ interface ValidateIssueRequestBody {
   thinkingLevel?: ThinkingLevel;
   /** Reasoning effort for Codex models (ignored for non-Codex models) */
   reasoningEffort?: ReasoningEffort;
+  /** Optional Claude-compatible provider ID for custom providers (e.g., GLM, MiniMax) */
+  providerId?: string;
   /** Comments to include in validation analysis */
   comments?: GitHubComment[];
   /** Linked pull requests for this issue */
@@ -87,6 +89,7 @@ async function runValidation(
   events: EventEmitter,
   abortController: AbortController,
   settingsService?: SettingsService,
+  providerId?: string,
   comments?: ValidationComment[],
   linkedPRs?: ValidationLinkedPR[],
   thinkingLevel?: ThinkingLevel,
@@ -176,7 +179,12 @@ ${basePrompt}`;
     let credentials = await settingsService?.getCredentials();
 
     if (settingsService) {
-      const providerResult = await getProviderByModelId(model, settingsService, '[ValidateIssue]');
+      const providerResult = await resolveProviderContext(
+        settingsService,
+        model,
+        providerId,
+        '[ValidateIssue]'
+      );
       if (providerResult.provider) {
         claudeCompatibleProvider = providerResult.provider;
         providerResolvedModel = providerResult.resolvedModel;
@@ -188,8 +196,12 @@ ${basePrompt}`;
       }
     }
 
-    // Use provider resolved model if available, otherwise use original model
-    const effectiveModel = providerResolvedModel || (model as string);
+    // CRITICAL: For custom providers (GLM, MiniMax), pass the provider's model ID (e.g. "GLM-4.7")
+    // to the API, NOT the resolved Claude model - otherwise we get "model not found"
+    // For standard Claude models, resolve aliases (e.g., 'opus' -> 'claude-opus-4-20250514')
+    const effectiveModel = claudeCompatibleProvider
+      ? (model as string)
+      : providerResolvedModel || resolveModelString(model as string);
     logger.info(`Using model: ${effectiveModel}`);
 
     // Use streamingQuery with event callbacks
@@ -308,9 +320,15 @@ export function createValidateIssueHandler(
         model = 'opus',
         thinkingLevel,
         reasoningEffort,
+        providerId,
         comments: rawComments,
         linkedPRs: rawLinkedPRs,
       } = req.body as ValidateIssueRequestBody;
+
+      const normalizedProviderId =
+        typeof providerId === 'string' && providerId.trim().length > 0
+          ? providerId.trim()
+          : undefined;
 
       // Transform GitHubComment[] to ValidationComment[] if provided
       const validationComments: ValidationComment[] | undefined = rawComments?.map((c) => ({
@@ -360,12 +378,14 @@ export function createValidateIssueHandler(
         isClaudeModel(model) ||
         isCursorModel(model) ||
         isCodexModel(model) ||
-        isOpencodeModel(model);
+        isOpencodeModel(model) ||
+        !!normalizedProviderId;
 
       if (!isValidModel) {
         res.status(400).json({
           success: false,
-          error: 'Invalid model. Must be a Claude, Cursor, Codex, or OpenCode model ID (or alias).',
+          error:
+            'Invalid model. Must be a Claude, Cursor, Codex, or OpenCode model ID (or alias), or provide a valid providerId for custom Claude-compatible models.',
         });
         return;
       }
@@ -394,6 +414,7 @@ export function createValidateIssueHandler(
         events,
         abortController,
         settingsService,
+        normalizedProviderId,
         validationComments,
         validationLinkedPRs,
         thinkingLevel,

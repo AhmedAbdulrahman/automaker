@@ -7,6 +7,7 @@ import {
   Workflow,
   Database,
   Terminal,
+  Unlink,
 } from 'lucide-react';
 import type { ProjectSettingsViewId } from '../hooks/use-project-settings-view';
 
@@ -19,9 +20,10 @@ export interface ProjectNavigationItem {
 export const PROJECT_SETTINGS_NAV_ITEMS: ProjectNavigationItem[] = [
   { id: 'identity', label: 'Identity', icon: User },
   { id: 'worktrees', label: 'Worktrees', icon: GitBranch },
-  { id: 'commands', label: 'Commands', icon: Terminal },
+  { id: 'commands-scripts', label: 'Commands & Scripts', icon: Terminal },
   { id: 'theme', label: 'Theme', icon: Palette },
   { id: 'claude', label: 'Models', icon: Workflow },
   { id: 'data', label: 'Data', icon: Database },
+  { id: 'orphaned', label: 'Orphaned Features', icon: Unlink },
   { id: 'danger', label: 'Danger Zone', icon: AlertTriangle },
 ];

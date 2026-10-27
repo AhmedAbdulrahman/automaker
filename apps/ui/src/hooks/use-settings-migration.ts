@@ -26,17 +26,20 @@ import { useEffect, useState, useRef } from 'react';
 import { createLogger } from '@automaker/utils/logger';
 import { getHttpApiClient, waitForApiKeyInit } from '@/lib/http-api-client';
 import { getItem, setItem } from '@/lib/storage';
+import { sanitizeWorktreeByProject } from '@/lib/settings-utils';
 import { useAppStore, THEME_STORAGE_KEY } from '@/store/app-store';
 import { useSetupStore } from '@/store/setup-store';
 import {
   DEFAULT_OPENCODE_MODEL,
   DEFAULT_MAX_CONCURRENCY,
+  DEFAULT_PHASE_MODELS,
   getAllOpencodeModelIds,
   getAllCursorModelIds,
   migrateCursorModelIds,
   migratePhaseModelEntry,
   type GlobalSettings,
   type CursorModelId,
+  type PhaseModelEntry,
 } from '@automaker/types';
 
 const logger = createLogger('SettingsMigration');
@@ -166,11 +169,13 @@ export function parseLocalStorageSettings(): Partial<GlobalSettings> | null {
       defaultSkipTests: state.defaultSkipTests as boolean,
       enableDependencyBlocking: state.enableDependencyBlocking as boolean,
       skipVerificationInAutoMode: state.skipVerificationInAutoMode as boolean,
+      mergePostAction: (state.mergePostAction as 'commit' | 'manual' | null) ?? null,
       useWorktrees: state.useWorktrees as boolean,
       defaultPlanningMode: state.defaultPlanningMode as GlobalSettings['defaultPlanningMode'],
       defaultRequirePlanApproval: state.defaultRequirePlanApproval as boolean,
       muteDoneSound: state.muteDoneSound as boolean,
       disableSplashScreen: state.disableSplashScreen as boolean,
+      defaultSortNewestCardOnTop: state.defaultSortNewestCardOnTop as boolean,
       enhancementModel: state.enhancementModel as GlobalSettings['enhancementModel'],
       validationModel: state.validationModel as GlobalSettings['validationModel'],
       phaseModels: state.phaseModels as GlobalSettings['phaseModels'],
@@ -182,10 +187,20 @@ export function parseLocalStorageSettings(): Partial<GlobalSettings> | null {
         state.enabledDynamicModelIds as GlobalSettings['enabledDynamicModelIds'],
       disabledProviders: (state.disabledProviders ?? []) as GlobalSettings['disabledProviders'],
       autoLoadClaudeMd: state.autoLoadClaudeMd as boolean,
+      useClaudeCodeSystemPrompt: state.useClaudeCodeSystemPrompt as boolean,
+      codexAutoLoadAgents: state.codexAutoLoadAgents as GlobalSettings['codexAutoLoadAgents'],
+      codexSandboxMode: state.codexSandboxMode as GlobalSettings['codexSandboxMode'],
+      codexApprovalPolicy: state.codexApprovalPolicy as GlobalSettings['codexApprovalPolicy'],
+      codexEnableWebSearch: state.codexEnableWebSearch as GlobalSettings['codexEnableWebSearch'],
+      codexEnableImages: state.codexEnableImages as GlobalSettings['codexEnableImages'],
+      codexAdditionalDirs: state.codexAdditionalDirs as GlobalSettings['codexAdditionalDirs'],
+      codexThreadId: state.codexThreadId as GlobalSettings['codexThreadId'],
       keyboardShortcuts: state.keyboardShortcuts as GlobalSettings['keyboardShortcuts'],
       mcpServers: state.mcpServers as GlobalSettings['mcpServers'],
       promptCustomization: state.promptCustomization as GlobalSettings['promptCustomization'],
       eventHooks: state.eventHooks as GlobalSettings['eventHooks'],
+      ntfyEndpoints: state.ntfyEndpoints as GlobalSettings['ntfyEndpoints'],
+      featureTemplates: state.featureTemplates as GlobalSettings['featureTemplates'],
       projects: state.projects as GlobalSettings['projects'],
       trashedProjects: state.trashedProjects as GlobalSettings['trashedProjects'],
       currentProjectId: (state.currentProject as { id?: string } | null)?.id ?? null,
@@ -193,6 +208,7 @@ export function parseLocalStorageSettings(): Partial<GlobalSettings> | null {
       projectHistoryIndex: state.projectHistoryIndex as number,
       lastSelectedSessionByProject:
         state.lastSelectedSessionByProject as GlobalSettings['lastSelectedSessionByProject'],
+      agentModelBySession: state.agentModelBySession as GlobalSettings['agentModelBySession'],
       // UI State from standalone localStorage keys or Zustand state
       worktreePanelCollapsed:
         worktreePanelCollapsed === 'true' || (state.worktreePanelCollapsed as boolean),
@@ -205,6 +221,12 @@ export function parseLocalStorageSettings(): Partial<GlobalSettings> | null {
       // Claude Compatible Providers (new system)
       claudeCompatibleProviders:
         (state.claudeCompatibleProviders as GlobalSettings['claudeCompatibleProviders']) ?? [],
+      // Settings that were previously missing from migration (added for sync parity)
+      enableAiCommitMessages: state.enableAiCommitMessages as boolean | undefined,
+      enableSkills: state.enableSkills as boolean | undefined,
+      skillsSources: state.skillsSources as GlobalSettings['skillsSources'] | undefined,
+      enableSubagents: state.enableSubagents as boolean | undefined,
+      subagentsSources: state.subagentsSources as GlobalSettings['subagentsSources'] | undefined,
     };
   } catch (error) {
     logger.error('Failed to parse localStorage settings:', error);
@@ -315,6 +337,15 @@ export function mergeSettings(
     merged.lastSelectedSessionByProject = localSettings.lastSelectedSessionByProject;
   }
 
+  if (
+    (!serverSettings.agentModelBySession ||
+      Object.keys(serverSettings.agentModelBySession).length === 0) &&
+    localSettings.agentModelBySession &&
+    Object.keys(localSettings.agentModelBySession).length > 0
+  ) {
+    merged.agentModelBySession = localSettings.agentModelBySession;
+  }
+
   // For simple values, use localStorage if server value is default/undefined
   if (!serverSettings.lastProjectDir && localSettings.lastProjectDir) {
     merged.lastProjectDir = localSettings.lastProjectDir;
@@ -347,6 +378,36 @@ export function mergeSettings(
     localSettings.claudeCompatibleProviders.length > 0
   ) {
     merged.claudeCompatibleProviders = localSettings.claudeCompatibleProviders;
+  }
+
+  // Event hooks - preserve from localStorage if server is empty
+  if (
+    (!serverSettings.eventHooks || serverSettings.eventHooks.length === 0) &&
+    localSettings.eventHooks &&
+    localSettings.eventHooks.length > 0
+  ) {
+    merged.eventHooks = localSettings.eventHooks;
+  }
+
+  // Preserve new settings fields from localStorage if server has defaults
+  // Use nullish coalescing to accept stored falsy values (e.g. false)
+  if (localSettings.enableAiCommitMessages != null && merged.enableAiCommitMessages == null) {
+    merged.enableAiCommitMessages = localSettings.enableAiCommitMessages;
+  }
+  if (localSettings.enableSkills != null && merged.enableSkills == null) {
+    merged.enableSkills = localSettings.enableSkills;
+  }
+  if (localSettings.skillsSources && (!merged.skillsSources || merged.skillsSources.length === 0)) {
+    merged.skillsSources = localSettings.skillsSources;
+  }
+  if (localSettings.enableSubagents != null && merged.enableSubagents == null) {
+    merged.enableSubagents = localSettings.enableSubagents;
+  }
+  if (
+    localSettings.subagentsSources &&
+    (!merged.subagentsSources || merged.subagentsSources.length === 0)
+  ) {
+    merged.subagentsSources = localSettings.subagentsSources;
   }
 
   return merged;
@@ -628,6 +689,12 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     (modelId) => !modelId.startsWith('amazon-bedrock/')
   );
 
+  const persistedKnownDynamicModelIds =
+    settings.knownDynamicModelIds ?? current.knownDynamicModelIds;
+  const sanitizedKnownDynamicModelIds = persistedKnownDynamicModelIds.filter(
+    (modelId) => !modelId.startsWith('amazon-bedrock/')
+  );
+
   // Convert ProjectRef[] to Project[] (minimal data, features will be loaded separately)
   const projects = (settings.projects ?? []).map((ref) => ({
     id: ref.id,
@@ -697,28 +764,47 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     defaultSkipTests: settings.defaultSkipTests ?? true,
     enableDependencyBlocking: settings.enableDependencyBlocking ?? true,
     skipVerificationInAutoMode: settings.skipVerificationInAutoMode ?? false,
+    mergePostAction: settings.mergePostAction ?? null,
     useWorktrees: settings.useWorktrees ?? true,
     defaultPlanningMode: settings.defaultPlanningMode ?? 'skip',
     defaultRequirePlanApproval: settings.defaultRequirePlanApproval ?? false,
     defaultFeatureModel: migratePhaseModelEntry(settings.defaultFeatureModel) ?? {
       model: 'claude-opus',
+      thinkingLevel: 'adaptive',
     },
     muteDoneSound: settings.muteDoneSound ?? false,
     disableSplashScreen: settings.disableSplashScreen ?? false,
+    defaultSortNewestCardOnTop: settings.defaultSortNewestCardOnTop ?? false,
     serverLogLevel: settings.serverLogLevel ?? 'info',
     enableRequestLogging: settings.enableRequestLogging ?? true,
     showQueryDevtools: settings.showQueryDevtools ?? true,
     enhancementModel: settings.enhancementModel ?? 'claude-sonnet',
     validationModel: settings.validationModel ?? 'claude-opus',
-    phaseModels: settings.phaseModels ?? current.phaseModels,
+    phaseModels: { ...DEFAULT_PHASE_MODELS, ...(settings.phaseModels ?? current.phaseModels) },
+    defaultThinkingLevel: settings.defaultThinkingLevel ?? 'adaptive',
+    defaultReasoningEffort: settings.defaultReasoningEffort ?? 'none',
     enabledCursorModels: allCursorModels, // Always use ALL cursor models
     cursorDefaultModel: sanitizedCursorDefaultModel,
     enabledOpencodeModels: sanitizedEnabledOpencodeModels,
     opencodeDefaultModel: sanitizedOpencodeDefaultModel,
     enabledDynamicModelIds: sanitizedDynamicModelIds,
+    knownDynamicModelIds: sanitizedKnownDynamicModelIds,
     disabledProviders: settings.disabledProviders ?? [],
-    autoLoadClaudeMd: settings.autoLoadClaudeMd ?? false,
+    enableAiCommitMessages: settings.enableAiCommitMessages ?? true,
+    enableSkills: settings.enableSkills ?? true,
+    skillsSources: settings.skillsSources ?? ['user', 'project'],
+    enableSubagents: settings.enableSubagents ?? true,
+    subagentsSources: settings.subagentsSources ?? ['user', 'project'],
+    autoLoadClaudeMd: settings.autoLoadClaudeMd ?? true,
+    useClaudeCodeSystemPrompt: settings.useClaudeCodeSystemPrompt ?? true,
     skipSandboxWarning: settings.skipSandboxWarning ?? false,
+    codexAutoLoadAgents: settings.codexAutoLoadAgents ?? false,
+    codexSandboxMode: settings.codexSandboxMode ?? 'workspace-write',
+    codexApprovalPolicy: settings.codexApprovalPolicy ?? 'on-request',
+    codexEnableWebSearch: settings.codexEnableWebSearch ?? false,
+    codexEnableImages: settings.codexEnableImages ?? true,
+    codexAdditionalDirs: settings.codexAdditionalDirs ?? [],
+    codexThreadId: settings.codexThreadId,
     keyboardShortcuts: {
       ...current.keyboardShortcuts,
       ...(settings.keyboardShortcuts as unknown as Partial<typeof current.keyboardShortcuts>),
@@ -726,6 +812,8 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     mcpServers: settings.mcpServers ?? [],
     promptCustomization: settings.promptCustomization ?? {},
     eventHooks: settings.eventHooks ?? [],
+    ntfyEndpoints: settings.ntfyEndpoints ?? [],
+    featureTemplates: settings.featureTemplates ?? [],
     claudeCompatibleProviders: settings.claudeCompatibleProviders ?? [],
     claudeApiProfiles: settings.claudeApiProfiles ?? [],
     activeClaudeApiProfileId: settings.activeClaudeApiProfileId ?? null,
@@ -735,15 +823,49 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     projectHistory: settings.projectHistory ?? [],
     projectHistoryIndex: settings.projectHistoryIndex ?? -1,
     lastSelectedSessionByProject: settings.lastSelectedSessionByProject ?? {},
+    agentModelBySession: settings.agentModelBySession
+      ? Object.fromEntries(
+          Object.entries(settings.agentModelBySession as Record<string, unknown>).map(
+            ([sessionId, entry]) => [
+              sessionId,
+              migratePhaseModelEntry(entry as string | PhaseModelEntry | null | undefined),
+            ]
+          )
+        )
+      : current.agentModelBySession,
+    // Restore all valid worktree selections (both main branch and feature worktrees).
+    // The validation effect in use-worktrees.ts handles deleted worktrees gracefully
+    // by resetting to main branch when the worktree list loads and the cached
+    // worktree no longer exists.
+    currentWorktreeByProject: sanitizeWorktreeByProject(settings.currentWorktreeByProject),
     // UI State
     worktreePanelCollapsed: settings.worktreePanelCollapsed ?? false,
     lastProjectDir: settings.lastProjectDir ?? '',
     recentFolders: settings.recentFolders ?? [],
-    // Terminal font (nested in terminalState)
-    ...(settings.terminalFontFamily && {
+    // File editor settings
+    editorFontSize: settings.editorFontSize ?? 13,
+    editorFontFamily: settings.editorFontFamily ?? 'default',
+    editorAutoSave: settings.editorAutoSave ?? false,
+    editorAutoSaveDelay: settings.editorAutoSaveDelay ?? 1000,
+    // Terminal settings (nested in terminalState)
+    ...((settings.terminalFontFamily ||
+      (settings as unknown as Record<string, unknown>).terminalCustomBackgroundColor !==
+        undefined ||
+      (settings as unknown as Record<string, unknown>).terminalCustomForegroundColor !==
+        undefined) && {
       terminalState: {
         ...current.terminalState,
-        fontFamily: settings.terminalFontFamily,
+        ...(settings.terminalFontFamily && { fontFamily: settings.terminalFontFamily }),
+        ...((settings as unknown as Record<string, unknown>).terminalCustomBackgroundColor !==
+          undefined && {
+          customBackgroundColor: (settings as unknown as Record<string, unknown>)
+            .terminalCustomBackgroundColor as string | null,
+        }),
+        ...((settings as unknown as Record<string, unknown>).terminalCustomForegroundColor !==
+          undefined && {
+          customForegroundColor: (settings as unknown as Record<string, unknown>)
+            .terminalCustomForegroundColor as string | null,
+        }),
       },
     }),
   });
@@ -788,24 +910,44 @@ function buildSettingsUpdateFromStore(): Record<string, unknown> {
     defaultSkipTests: state.defaultSkipTests,
     enableDependencyBlocking: state.enableDependencyBlocking,
     skipVerificationInAutoMode: state.skipVerificationInAutoMode,
+    mergePostAction: state.mergePostAction,
     useWorktrees: state.useWorktrees,
     defaultPlanningMode: state.defaultPlanningMode,
     defaultRequirePlanApproval: state.defaultRequirePlanApproval,
     muteDoneSound: state.muteDoneSound,
     disableSplashScreen: state.disableSplashScreen,
+    defaultSortNewestCardOnTop: state.defaultSortNewestCardOnTop,
     serverLogLevel: state.serverLogLevel,
     enableRequestLogging: state.enableRequestLogging,
     enhancementModel: state.enhancementModel,
     validationModel: state.validationModel,
     phaseModels: state.phaseModels,
+    defaultThinkingLevel: state.defaultThinkingLevel,
+    defaultReasoningEffort: state.defaultReasoningEffort,
     enabledDynamicModelIds: state.enabledDynamicModelIds,
+    knownDynamicModelIds: state.knownDynamicModelIds,
     disabledProviders: state.disabledProviders,
+    enableAiCommitMessages: state.enableAiCommitMessages,
+    enableSkills: state.enableSkills,
+    skillsSources: state.skillsSources,
+    enableSubagents: state.enableSubagents,
+    subagentsSources: state.subagentsSources,
     autoLoadClaudeMd: state.autoLoadClaudeMd,
+    useClaudeCodeSystemPrompt: state.useClaudeCodeSystemPrompt,
     skipSandboxWarning: state.skipSandboxWarning,
+    codexAutoLoadAgents: state.codexAutoLoadAgents,
+    codexSandboxMode: state.codexSandboxMode,
+    codexApprovalPolicy: state.codexApprovalPolicy,
+    codexEnableWebSearch: state.codexEnableWebSearch,
+    codexEnableImages: state.codexEnableImages,
+    codexAdditionalDirs: state.codexAdditionalDirs,
+    codexThreadId: state.codexThreadId,
     keyboardShortcuts: state.keyboardShortcuts,
     mcpServers: state.mcpServers,
     promptCustomization: state.promptCustomization,
     eventHooks: state.eventHooks,
+    ntfyEndpoints: state.ntfyEndpoints,
+    featureTemplates: state.featureTemplates,
     claudeCompatibleProviders: state.claudeCompatibleProviders,
     claudeApiProfiles: state.claudeApiProfiles,
     activeClaudeApiProfileId: state.activeClaudeApiProfileId,
@@ -815,10 +957,18 @@ function buildSettingsUpdateFromStore(): Record<string, unknown> {
     projectHistory: state.projectHistory,
     projectHistoryIndex: state.projectHistoryIndex,
     lastSelectedSessionByProject: state.lastSelectedSessionByProject,
+    agentModelBySession: state.agentModelBySession,
+    currentWorktreeByProject: state.currentWorktreeByProject,
     worktreePanelCollapsed: state.worktreePanelCollapsed,
     lastProjectDir: state.lastProjectDir,
     recentFolders: state.recentFolders,
+    editorFontSize: state.editorFontSize,
+    editorFontFamily: state.editorFontFamily,
+    editorAutoSave: state.editorAutoSave,
+    editorAutoSaveDelay: state.editorAutoSaveDelay,
     terminalFontFamily: state.terminalState.fontFamily,
+    terminalCustomBackgroundColor: state.terminalState.customBackgroundColor,
+    terminalCustomForegroundColor: state.terminalState.customForegroundColor,
   };
 }
 

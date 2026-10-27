@@ -9,7 +9,11 @@
 import type { ModelProvider } from './settings.js';
 import { LEGACY_CURSOR_MODEL_MAP } from './cursor-models.js';
 import { CLAUDE_MODEL_MAP, CODEX_MODEL_MAP } from './model.js';
-import { OPENCODE_MODEL_CONFIG_MAP, LEGACY_OPENCODE_MODEL_MAP } from './opencode-models.js';
+import {
+  OPENCODE_MODEL_CONFIG_MAP,
+  LEGACY_OPENCODE_MODEL_MAP,
+  RETIRED_OPENCODE_MODEL_MAP,
+} from './opencode-models.js';
 import { GEMINI_MODEL_MAP } from './gemini-models.js';
 import { COPILOT_MODEL_MAP } from './copilot-models.js';
 
@@ -21,6 +25,26 @@ export const PROVIDER_PREFIXES = {
   gemini: 'gemini-',
   copilot: 'copilot-',
 } as const;
+
+/**
+ * Provider prefix exceptions map
+ *
+ * Some providers legitimately use model IDs that start with other providers' prefixes.
+ * For example, Cursor's Gemini models (e.g., "gemini-3-pro") start with "gemini-" prefix
+ * but are Cursor models, not Gemini models.
+ *
+ * Key: The provider receiving the model (expectedProvider)
+ * Value: Array of provider prefixes to skip validation for
+ *
+ * @example
+ * // Cursor provider can receive model IDs starting with "gemini-" prefix
+ * PROVIDER_PREFIX_EXCEPTIONS.cursor.includes('gemini') === true
+ */
+export const PROVIDER_PREFIX_EXCEPTIONS: Partial<
+  Record<ModelProvider, readonly (keyof typeof PROVIDER_PREFIXES)[]>
+> = {
+  cursor: ['gemini'],
+};
 
 /**
  * Check if a model string represents a Cursor model
@@ -51,7 +75,7 @@ export function isCursorModel(model: string | undefined | null): boolean {
 /**
  * Check if a model string represents a Claude model
  *
- * @param model - Model string to check (e.g., "sonnet", "opus", "claude-sonnet-4-20250514")
+ * @param model - Model string to check (e.g., "sonnet", "opus", "claude-sonnet-4-6")
  * @returns true if the model is a Claude model
  */
 export function isClaudeModel(model: string | undefined | null): boolean {
@@ -310,7 +334,10 @@ export function getBareModelId(model: string): string {
 export function normalizeModelString(model: string | undefined | null): string {
   if (!model || typeof model !== 'string') return 'claude-sonnet'; // Default to canonical
 
-  // Already has a canonical prefix - return as-is
+  // Already has a canonical prefix - return as-is (but check for retired opencode models first)
+  if (model.startsWith(PROVIDER_PREFIXES.opencode) && model in RETIRED_OPENCODE_MODEL_MAP) {
+    return RETIRED_OPENCODE_MODEL_MAP[model];
+  }
   if (
     model.startsWith(PROVIDER_PREFIXES.cursor) ||
     model.startsWith(PROVIDER_PREFIXES.codex) ||
@@ -364,7 +391,7 @@ export function normalizeModelString(model: string | undefined | null): string {
  *
  * @example
  * supportsStructuredOutput('sonnet') // true (Claude)
- * supportsStructuredOutput('claude-sonnet-4-20250514') // true (Claude)
+ * supportsStructuredOutput('claude-sonnet-4-6') // true (Claude)
  * supportsStructuredOutput('codex-gpt-5.2') // true (Codex/OpenAI)
  * supportsStructuredOutput('cursor-auto') // false
  * supportsStructuredOutput('gemini-2.5-pro') // false
@@ -392,20 +419,45 @@ export function supportsStructuredOutput(model: string | undefined | null): bool
  * This validation ensures the ProviderFactory properly stripped prefixes before
  * passing models to providers.
  *
+ * NOTE: Some providers use model IDs that may start with other providers' prefixes
+ * (e.g., Cursor's "gemini-3-pro" starts with "gemini-" but is a Cursor model, not a Gemini model).
+ * These exceptions are configured in PROVIDER_PREFIX_EXCEPTIONS.
+ *
  * @param model - Model ID to validate
- * @param providerName - Name of the provider for error messages
- * @throws Error if model contains a provider prefix
+ * @param providerName - Name of the provider receiving this model (for error messages)
+ * @param expectedProvider - The provider type expected to receive this model (e.g., "cursor", "gemini")
+ * @throws Error if model contains a provider prefix that doesn't match the expected provider
+ * @returns void
  *
  * @example
- * validateBareModelId("gpt-5.1-codex-max", "CodexProvider");  // ✅ OK
- * validateBareModelId("codex-gpt-5.1-codex-max", "CodexProvider");  // ❌ Throws error
+ * validateBareModelId("gpt-5.1-codex-max", "CodexProvider", "codex");  // ✅ OK
+ * validateBareModelId("codex-gpt-5.1-codex-max", "CodexProvider", "codex");  // ❌ Throws error
+ * validateBareModelId("gemini-3-pro", "CursorProvider", "cursor");  // ✅ OK (Cursor Gemini model)
+ * validateBareModelId("gemini-3-pro", "GeminiProvider", "gemini");  // ✅ OK (Gemini model)
  */
-export function validateBareModelId(model: string, providerName: string): void {
+export function validateBareModelId(
+  model: string,
+  providerName: string,
+  expectedProvider?: ModelProvider
+): void {
   if (!model || typeof model !== 'string') {
     throw new Error(`[${providerName}] Invalid model ID: expected string, got ${typeof model}`);
   }
 
-  for (const [provider, prefix] of Object.entries(PROVIDER_PREFIXES)) {
+  for (const provider of Object.keys(PROVIDER_PREFIXES) as Array<keyof typeof PROVIDER_PREFIXES>) {
+    const prefix = PROVIDER_PREFIXES[provider];
+    // Skip validation for configured provider prefix exceptions
+    // (e.g., Cursor provider can receive models with "gemini-" prefix for Cursor Gemini models)
+    if (expectedProvider && PROVIDER_PREFIX_EXCEPTIONS[expectedProvider]?.includes(provider)) {
+      continue;
+    }
+
+    // Skip validation if the model has the expected provider's own prefix
+    // (e.g., Gemini provider can receive models with "gemini-" prefix)
+    if (expectedProvider && provider === expectedProvider) {
+      continue;
+    }
+
     if (model.startsWith(prefix)) {
       throw new Error(
         `[${providerName}] Model ID should not contain provider prefix '${prefix}'. ` +

@@ -319,7 +319,8 @@ export function LoginView() {
     if (state.phase === 'redirecting') {
       navigate({ to: state.to });
     }
-  }, [state.phase, state.phase === 'redirecting' ? state.to : null, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- state.to only accessed when phase is redirecting
+  }, [state.phase, navigate]);
 
   // Handle login form submission
   const handleSubmit = (e: React.FormEvent) => {
@@ -348,7 +349,7 @@ export function LoginView() {
   // Checking server connectivity
   if (state.phase === 'checking_server') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <div className="flex min-h-full items-center justify-center bg-background p-4">
         <div className="text-center space-y-4">
           <Spinner size="xl" className="mx-auto" />
           <p className="text-sm text-muted-foreground">
@@ -363,7 +364,7 @@ export function LoginView() {
   // Server unreachable after retries
   if (state.phase === 'server_error') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <div className="flex min-h-full items-center justify-center bg-background p-4">
         <div className="w-full max-w-md space-y-6 text-center">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
             <ServerCrash className="h-8 w-8 text-destructive" />
@@ -384,7 +385,7 @@ export function LoginView() {
   // Checking setup status after auth
   if (state.phase === 'checking_setup' || state.phase === 'redirecting') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <div className="flex min-h-full items-center justify-center bg-background p-4">
         <div className="text-center space-y-4">
           <Spinner size="xl" className="mx-auto" />
           <p className="text-sm text-muted-foreground">
@@ -397,11 +398,11 @@ export function LoginView() {
 
   // Login form (awaiting_login or logging_in)
   const isLoggingIn = state.phase === 'logging_in';
-  const apiKey = state.phase === 'awaiting_login' ? state.apiKey : state.apiKey;
+  const apiKey = state.apiKey;
   const error = state.phase === 'awaiting_login' ? state.error : null;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+    <div className="flex min-h-full items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-8">
         {/* Header */}
         <div className="text-center">
