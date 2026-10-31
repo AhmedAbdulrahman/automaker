@@ -12,7 +12,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-Issues live on the fork **`AhmedAbdulrahman/automaker`**, not on `upstream` (`AutoMaker-Org/automaker`). This clone has `gh repo set-default AhmedAbdulrahman/automaker` configured, so plain `gh` commands target the fork. When in doubt, pass `-R AhmedAbdulrahman/automaker` explicitly. Never file issues or apply labels on upstream.
+Issues live in **`AhmedAbdulrahman/instabuild`**. This clone has `gh repo set-default AhmedAbdulrahman/instabuild` configured, so plain `gh` commands target it. Never file issues on `AutoMaker-Org/automaker`, the unmaintained project Instabuild was originally forked from.
 
 ## Pull requests as a triage surface
 

@@ -179,7 +179,7 @@ Use `resolveModelString()` from `@automaker/model-resolver` to convert model ali
 
 ### Issue tracker
 
-GitHub Issues on the fork `AhmedAbdulrahman/automaker` (not upstream), via `gh`. See `docs/agents/issue-tracker.md`.
+GitHub Issues on `AhmedAbdulrahman/instabuild`, via `gh`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
