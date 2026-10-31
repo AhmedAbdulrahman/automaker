@@ -69,9 +69,12 @@ for (const pkgName of LOCAL_PACKAGES) {
     cpSync(join(srcDir, 'dist'), join(destDir, 'dist'), { recursive: true });
   }
 
-  // Copy package.json
+  // Copy package.json without devDependencies: npm still resolves dev deps of
+  // file: links despite --omit=dev, and npm 10 crashes on some of them (vitest 4.1)
   if (existsSync(join(srcDir, 'package.json'))) {
-    cpSync(join(srcDir, 'package.json'), join(destDir, 'package.json'));
+    const libPkg = JSON.parse(readFileSync(join(srcDir, 'package.json'), 'utf-8'));
+    delete libPkg.devDependencies;
+    writeFileSync(join(destDir, 'package.json'), JSON.stringify(libPkg, null, 2));
   }
 
   console.log(`   ✓ ${pkgName}`);
